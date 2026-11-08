@@ -101,7 +101,7 @@ _styles: >
 
 放大看看 H100 的 SM：
 
-{% include figure.liquid path="assets/gpu/blackwell-sm.png" class="img-small" link="true" caption="<b>图：</b>H100 的 SM 示意图（<a href='https://wccftech.com/nvidia-hopper-gh100-gpu-official-5nm-process-worlds-fastest-hpc-chip-80-billion-transistors-hbm3-memory/'>来源</a>）：4 个相同的<b>子分区</b>，每个含一个 Tensor Core、一个 Warp 调度器、一个寄存器堆、若干不同精度的 CUDA 核心。下方标注 “L1 Data Cache” 的就是 256kB 的 SMEM。B200 长相类似，但为"喂饱"更大的 Tensor Core，额外加了一大块张量内存 TMEM。" %}
+{% include figure.liquid path="assets/gpu/blackwell-sm.png" class="img-small" link="true" caption="<b>图：</b>H100 的 SM 示意图（<a href='https://wccftech.com/nvidia-hopper-gh100-gpu-official-5nm-process-worlds-fastest-hpc-chip-80-billion-transistors-hbm3-memory/'>来源</a>）：4 个相同的<b>子分区</b>，每个含一个 Tensor Core、一个 Warp 调度器、一个寄存器堆、若干不同精度的 CUDA 核心。下方标注 “L1 Data Cache” 的就是 256kB 的 SMEM。B200 长相类似，但为“喂饱”更大的 Tensor Core，额外加了一大块张量内存 TMEM。" %}
 
 每个 SM 均分为 4 个象限——NVIDIA 叫 **SM 子分区**——每个含一个 Tensor Core、16k 个 32 位寄存器、以及一个 SIMD/SIMT 向量运算单元 Warp 调度器（它的计算车道即 ALU，NVIDIA 叫 **CUDA 核心**）。分区里最核心的部件当属 Tensor Core：矩阵乘全靠它，分区里绝大部分 FLOPs/s 也来自它——但它不是唯一值得注意的部件。
 
