@@ -198,7 +198,7 @@ $$X_{opt} = \sqrt{\frac{2BN}{F}} = \sqrt{\frac{2 \cdot 4.19e6 \cdot 8960}{28672}
 
 {% enddetails %}
 
-<p markdown=1 class="takeaway">**要点**：用"数据并行（1024 路）+ 序列并行（2 路）+ 张量并行（4 路）"的组合，我们就能在满配 TPU v5p 整机群上以 400 万 token 的批训练 LLaMA-3，且不被通信卡住。若只用纯 FSDP、或 FSDP+序列并行，就会被通信卡住。上一节推的那些公式真的很有用。</p>
+<p markdown=1 class="takeaway">**要点**：用“数据并行（1024 路）+ 序列并行（2 路）+ 张量并行（4 路）”的组合，我们就能在满配 TPU v5p 整机群上以 400 万 token 的批训练 LLaMA-3，且不被通信卡住。若只用纯 FSDP、或 FSDP+序列并行，就会被通信卡住。上一节推的那些公式真的很有用。</p>
 
 ## 动手解题
 

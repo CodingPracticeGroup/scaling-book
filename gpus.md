@@ -165,7 +165,7 @@ B100 没有量产，就不列了<d-footnote>NVIDIA 确实做过 B100，但只是
 
 |              GPU              |     TPU     |              这是什么？              |
 | :---------------------------: | :---------: | :-----------------------------------: |
-| 流式多处理器（SM） | Tensor Core | 装着其他组件的核心"小间" |
+| 流式多处理器（SM） | Tensor Core | 装着其他组件的核心“小间” |
 |        Warp 调度器         |     VPU     |      SIMD 向量运算单元      |
 |           CUDA 核心           |   VPU ALU   |               SIMD ALU                |
 |        SMEM（L1 缓存）        |    VMEM     |       快速片上缓存       |
@@ -535,7 +535,7 @@ $$T_\text{comms} = \frac{2 \cdot D \cdot F \cdot 256}{Y \cdot \text{12.8e12}} = 
 
 {% enddetails %}
 
-<p markdown=1 class="takeaway">**要点**：多轴分片并存时，外层归约的成本按"内轴横跨的节点数"成比例减少。</p>
+<p markdown=1 class="takeaway">**要点**：多轴分片并存时，外层归约的成本按“内轴横跨的节点数”成比例减少。</p>
 
 ### 练习 4：集合通信
 

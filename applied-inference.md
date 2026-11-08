@@ -187,7 +187,7 @@ int8 权重 + bfloat16 计算是常见组合：无损量化参数，往往比直
 
 {% enddetails %}
 
-<p markdown=1 class="takeaway">**要点**：解码延迟永远可以用"把所有参数从 HBM 装进 MXU 要多久"来设下界。KV 缓存小的时候，可以把每一层理解成"按块搬进权重、用完就扔"。只要批不大、设备间通信不多，这个界通常靠谱（误差 1.5 倍以内）。批更大时，就得把 KV 缓存的读取也建模进来——那时它比参数更占头。</p>
+<p markdown=1 class="takeaway">**要点**：解码延迟永远可以用“把所有参数从 HBM 装进 MXU 要多久”来设下界。KV 缓存小的时候，可以把每一层理解成“按块搬进权重、用完就扔”。只要批不大、设备间通信不多，这个界通常靠谱（误差 1.5 倍以内）。批更大时，就得把 KV 缓存的读取也建模进来——那时它比参数更占头。</p>
 
 同样，在计算受限区（比如训练或大批推理），可以用 $$\text{Total FLOPs} / (N \cdot C) = 2 \cdot \text{param count} \cdot B / (N \cdot C)$$ 设下界——它假设零通信。
 
@@ -283,7 +283,7 @@ int8 和 int4 那两套配置则 _可以_ 纯模型并行。于是我们撞上�
 
 <figure class="plotly-embed">
   <iframe src="{{ 'assets/plotly/pareto.html' | relative_url }}" title="Latency/throughput Pareto frontier for LLaMA 3-70B" loading="lazy" scrolling="no"></iframe>
-  <figcaption><b>图：</b>LLaMA 3-70B（int8 权重、16 路张量并行）在 TPU v5e 4x4 上，每芯片吞吐对每 token 延迟，沿每条曲线扫描批大小。拖动滑块改变上下文长度；每条曲线在"KV 缓存还装得进 HBM 的最大批"处截止。</figcaption>
+  <figcaption><b>图：</b>LLaMA 3-70B（int8 权重、16 路张量并行）在 TPU v5e 4x4 上，每芯片吞吐对每 token 延迟，沿每条曲线扫描批大小。拖动滑块改变上下文长度；每条曲线在“KV 缓存还装得进 HBM 的最大批”处截止。</figcaption>
 </figure>
 
 * **感受一下成本与延迟的交换有多剧烈。**每 token 延迟翻一倍，每 token 成本就能降大约 100 倍。另外，延迟从小批时的 5.5ms 一路到大批的 20ms，跨度巨大。

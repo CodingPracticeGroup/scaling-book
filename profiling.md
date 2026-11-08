@@ -168,7 +168,7 @@ Trace Viewer 按时间顺序列出每块 TPU 核上的所有动作。这里只�
 2. 认准重复的方块，就能把单层单独拎出来。结合代码（以及对 Transformer 的了解），也能认出哪段是注意力、哪段是 MLP。
 3. 点一条 XLA 算子，可以看到它来自代码的哪一行（对理解 trace 很有用），还有通往 Graph Viewer 的链接。
 
-<p markdown=1 class="takeaway">**提示**：Trace Viewer 支持"体感游戏"式操作：A/D 左右平移，W/S 缩放。熟练之后导航快得多。</p>
+<p markdown=1 class="takeaway">**提示**：Trace Viewer 支持“体感游戏”式操作：A/D 左右平移，W/S 缩放。熟练之后导航快得多。</p>
 
 ### 一条 XLA 算子怎么读
 
