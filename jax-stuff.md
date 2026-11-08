@@ -99,7 +99,7 @@ JAX 对多设备编程支持三种流派：
 2. `jax.jit` 配 `Explicit` 网格轴：看起来和 (1) 差不多，但分片传播由 JAX 而不是 XLA 负责。这意味着数组的分片成了 JAX 类型系统的一部分：检测到含糊的通信，JAX 会直接报错，让你来定夺。
 3. `jax.shard_map`：更手动的那一头。你拿到的是“单设备视角”的程序，想要什么通信都得自己写。手里有分片数组、想每台设备都拿全量？自己加一个 `jax.lax.all_gather`。想把数组跨设备求和？自己加一个 `jax.lax.psum`（就是 AllReduce）。写起来更累，但也绝不会做出你没要的事。
 
-<h3 id="auto-sharding-mode">Auto 分片模式</h3>
+<h3 id="auto-分片模式">Auto 分片模式</h3>
 
 `jax.jit` 在 JAX 里身兼两职。顾名思义，它“即时”把 Python 函数编译成字节码（经 XLA/HLO/LLO），跑得更快。此外，只要输入是分片的、或者你指定了 `in_sharding`/`out_sharding`，它还会让 XLA 把计算铺到多设备上、自动补通信。比如，用 `jax.jit` 写一个分片矩阵乘：
 
@@ -172,7 +172,7 @@ def matmul(x, W_in, W_out):
 
 在“用 `jax.lax.with_sharding_constraint` 控制中间分片”的自动切分世界里，这样的活儿大概占了 JAX 并行编程的 60%。可“挠编译器痒痒”是出了名的不好玩：你可以把每个中间变量都标一遍，还是不敢保证拿到想要的结果。那么，如果分片传播这件事本来就由 JAX 自己来管、来控，会怎样？
 
-<h3 id="explicit-sharding-mode">Explicit 分片模式</h3>
+<h3 id="explicit-分片模式">Explicit 分片模式</h3>
 
 Explicit 分片（又叫“分片进类型”）看起来和自动分片很像，只是分片传播发生在 JAX 这一层！每个 JAX 运算都有一条分片规则：读入参的分片，推出结果的分片。用 `jax.typeof` 就能看到结果分片：
 
@@ -242,7 +242,7 @@ print(jax.typeof(out))  # bfloat16[8@X,8192@Y]
 
 Auto 模式和 Explicit 模式可以用 `jax.sharding.auto_axes` 与 `jax.sharding.explicit_axes` 组合使用。想深入了解，[这篇文档](https://docs.jax.dev/en/latest/notebooks/explicit-sharding.html)非常值得一读。
 
-<h3 id="manual-sharding-mode-via-shard-map">Manual 分片模式：shard_map</h3>
+<h3 id="manual-分片模式-shard-map">Manual 分片模式：shard_map</h3>
 
 如果说 Shardy 是“编译器你来开方向盘”模式，那 jax [shard_map](https://jax.readthedocs.io/en/latest/jep/14273-shard-map.html) 就是把方向盘整个交到你手里。输入的分片还是像 `jax.jit` 那样指定，但之后所有通信都得自己写。`jax.jit` 给你的是跨设备的全局视图，`shard_map` 给你的则是每台设备的局部视图。
 

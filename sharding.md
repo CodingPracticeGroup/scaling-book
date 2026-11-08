@@ -262,14 +262,14 @@ A_{10}B_{00} + A_{11}B_{10} & A_{10}B_{01} + A_{11}B_{11}
 {% enddetails %}
 
 好在，所有可能的分片都能归成大约 4 种情形，每种情形都有一条对应“要加什么通信”的规则：
-1. **[情形 1](#case-1-neither-multiplicand-has-a-sharded-contracting-dimension)：** 两个输入沿收缩维都没有分片。_完全不用通信，本地直接乘。_
-2. **[情形 2](#case-2-one-multiplicand-has-a-sharded-contracting-dimension)：** 有一个输入沿收缩维分片了。_通常先沿收缩维对这个输入做一次 “AllGather”。_
-3. **[情形 3](#case-3-both-multiplicands-have-sharded-contracting-dimensions)：** 两个输入沿收缩维都被分片了。_本地先把分片乘起来，再对结果做一次 “AllReduce”。_
-4. **[情形 4](#case-4-both-multiplicands-have-a-non-contracting-dimension-sharded-along-the-same-axis)：** 两个输入都有一个非收缩维沿同一条网格轴被分片。不先把其中一个输入 AllGather 一下，就没法往下做。
+1. **[情形 1](#情形-1-两个乘数的收缩维都没有被分片)：** 两个输入沿收缩维都没有分片。_完全不用通信，本地直接乘。_
+2. **[情形 2](#情形-2-有一个乘数的收缩维被分片了)：** 有一个输入沿收缩维分片了。_通常先沿收缩维对这个输入做一次 “AllGather”。_
+3. **[情形 3](#情形-3-两个乘数的收缩维都被分片了)：** 两个输入沿收缩维都被分片了。_本地先把分片乘起来，再对结果做一次 “AllReduce”。_
+4. **[情形 4](#情形-4-两个乘数都有一个非收缩维沿同一条网格轴被分片)：** 两个输入都有一个非收缩维沿同一条网格轴被分片。不先把其中一个输入 AllGather 一下，就没法往下做。
 
 你可以只把这几条当成“照做就行”的规则，但理解它们为什么成立、各自多贵，也很值得。下面逐个细讲。
 
-### 情形 1：两个乘数的收缩维都没有被分片 {#case-1-neither-multiplicand-has-a-sharded-contracting-dimension}
+### 情形 1：两个乘数的收缩维都没有被分片 {#情形-1-两个乘数的收缩维都没有被分片}
 
 **引理：** 给分片矩阵做乘法时，计算是合法的，输出会自动继承输入的分片——*除非*收缩维被分片了，或者两个矩阵沿同一条轴都分了片。比如下面这样完全没问题：
 
@@ -286,9 +286,9 @@ $$\begin{align*}
 \mathbf{A}[I_X, J] \cdot \mathbf{B}[J, K_Y] \rightarrow &\ \mathbf{C}[I_X, K_Y]
 \end{align*}$$
 
-由于 **A** 和 **B** 的收缩维 **J** 都没被分片，我们只要把各个输入的分块在本地乘起来，结果*自然就已经*按照想要的输出分片摆好了。当两个乘数都有非收缩维沿同一条轴被分片时，这话就不再成立（详见[非法分片](#case-4-both-multiplicands-have-a-non-contracting-dimension-sharded-along-the-same-axis)一节）。
+由于 **A** 和 **B** 的收缩维 **J** 都没被分片，我们只要把各个输入的分块在本地乘起来，结果*自然就已经*按照想要的输出分片摆好了。当两个乘数都有非收缩维沿同一条轴被分片时，这话就不再成立（详见[非法分片](#情形-4-两个乘数都有一个非收缩维沿同一条网格轴被分片)一节）。
 
-### 情形 2：有一个乘数的收缩维被分片了 {#case-2-one-multiplicand-has-a-sharded-contracting-dimension}
+### 情形 2：有一个乘数的收缩维被分片了 {#情形-2-有一个乘数的收缩维被分片了}
 
 看看输入 **A** 沿收缩维 **J** 被分片、而 **B** 完全复制时该怎么办：
 
@@ -304,7 +304,7 @@ $$\mathbf{A}[I, J] \cdot \mathbf{B}[J, K] \rightarrow \mathbf{C}[I, K]$$
 
 <p markdown=1 class="takeaway">**要点：** 乘矩阵时，若其中一方的收缩维被分片了，一般先把它 AllGather 起来，让收缩维不再分片，然后在本地乘。</p>
 
-注意，若 **B** 没有沿 X 分片，我们也可以先在本地乘出“部分和”，再把这些部分和加起来（即 *AllReduce*）。这样计算也能分到各设备上，只是通信通常更贵。某些情况下这样反而更快，不过现实中 **B** 往往也是分过片的，所以一般不这么干。下面[第 4 题](#some-problems-to-work)会算清楚什么时候这样更划算。
+注意，若 **B** 没有沿 X 分片，我们也可以先在本地乘出“部分和”，再把这些部分和加起来（即 *AllReduce*）。这样计算也能分到各设备上，只是通信通常更贵。某些情况下这样反而更快，不过现实中 **B** 往往也是分过片的，所以一般不这么干。下面[第 4 题](#动手解题)会算清楚什么时候这样更划算。
 
 **什么是 AllGather？** AllGather 是我们要讲的第一个核心 [MPI](https://en.wikipedia.org/wiki/Message_Passing_Interface) 通信原语。AllGather 会*消除*某条轴上的分片：沿那条轴散落在各设备上的分片，会被拼回完整的一份，放到这条轴上的*每台*设备上。用我们的记号，AllGather 就是“把下标擦掉”，例如：
 
@@ -379,7 +379,7 @@ $$T_{total} = \max \left[ \frac{T_{min} \cdot \sum_{i} |X_i|}{2}, \frac{V}{W_\te
 
 <p markdown=1 class="takeaway">**注意：** 对于 `{'X': 16, 'Y': 4}` 这样的二维网格，网格轴并不要求一一对应某条具体的*硬件*轴。比如它也可以描述一个 4x4x4 的 TPU v5p 立方体、其中两条轴都挂在 $X$ 名下。后文讲“跨多轴的数据并行”时会用到这一点。</p>
 
-### 情形 3：两个乘数的收缩维都被分片了 {#case-3-both-multiplicands-have-sharded-contracting-dimensions}
+### 情形 3：两个乘数的收缩维都被分片了 {#情形-3-两个乘数的收缩维都被分片了}
 
 第三种基本情形：两个乘数沿收缩维、且沿同一条网格轴都被分片了：
 
@@ -429,7 +429,7 @@ $$T_{\text{comms per AllReduce}} = 2 \cdot \frac{V}{W_\text{ici}}$$
 
 其中 $$W_\text{ici}$$ 是双向带宽，前提是有一条完整的归约环。
 
-### 情形 4：两个乘数都有一个非收缩维沿同一条网格轴被分片 {#case-4-both-multiplicands-have-a-non-contracting-dimension-sharded-along-the-same-axis}
+### 情形 4：两个乘数都有一个非收缩维沿同一条网格轴被分片 {#情形-4-两个乘数都有一个非收缩维沿同一条网格轴被分片}
 
 给一个张量分片时，每条网格维最多只能出现一次。按上面的规则做，有时会撞上违反这条规则的情形，比如：
 
@@ -463,7 +463,7 @@ A[I_X, J] \cdot B[J, K] \rightarrow &\ C[I_X, K]
 
 还有一个核心通信原语要讲，它出现在混合专家（MoE）等模型的计算里：**AllToAll**。
 
-### 最后一个通信原语：AllToAll
+### 最后一个通信原语：AllToAll {#最后一个通信原语-alltoall}
 
 最后这个基本集合通信，在分片矩阵乘法里不会自然出现，但在实践中频繁遇到：**AllToAll** 集合通信，更准确说是它的特例——*分片转置*（resharding，重新分片）操作。例如：
 
@@ -576,7 +576,7 @@ $$T_{\text{comm per AllGather or ReduceScatter}} = \frac{\text{Data volume}}{\te
 | **AllReduce**     | 沿某轴把部分和加起来，去掉一个 { U<sub>x</sub> }。是 AllGather 和 ReduceScatter 的组合。 | $[A_X, B]\\{U_Y\\} \to [A_X, B]$ | AllGather 的 2 倍                                    |
 | **AllToAll**      | 收集（复制）一条轴，同时沿同一条轴分片另一条维。                                 | $[A, B_X] \to [A_X, B]$          | 双向环上为 AllGather 的 1/4           |
 
-## 动手解题 {#some-problems-to-work}
+## 动手解题 {#动手解题}
 
 *这里有一些与本节内容配套的练习题。目前不会给出全部答案，但我们会陆续补上。*
 
@@ -675,7 +675,7 @@ $$T_\text{comms for Strategy 2} < T_\text{math for Strategy 1} \Leftrightarrow \
 
 **问题 8 [挑战题]**：用上面的代码片段做模板，分配一个分片数组，用 pmap 或 shard_map 分别给 4 种主要通信原语（AllGather、AllReduce、ReduceScatter、AllToAll）做基准测试。要用到 `jax.lax.all_gather`、`jax.lax.psum`、`jax.lax.psum_scatter` 和 `jax.lax.all_to_all`。你理解这些函数的语义吗？它们各要花多长时间？
 
-**问题 9 [分片矩阵乘法的另一种策略？]**：我们在上面[情形 2](#case-2-one-multiplicand-has-a-sharded-contracting-dimension)说过：矩阵乘法只有一个输入沿收缩维分片时，应当把分片的矩阵 AllGather 起来，再在本地做收缩。你可能想到的另一种做法是：先分片乘、再把结果 AllReduce（把两边都当成沿收缩维分片了），即 $A[I, J_X] *_J B[J, K] \to C[I, K]$ 通过：
+**问题 9 [分片矩阵乘法的另一种策略？]**：我们在上面[情形 2](#情形-2-有一个乘数的收缩维被分片了)说过：矩阵乘法只有一个输入沿收缩维分片时，应当把分片的矩阵 AllGather 起来，再在本地做收缩。你可能想到的另一种做法是：先分片乘、再把结果 AllReduce（把两边都当成沿收缩维分片了），即 $A[I, J_X] *_J B[J, K] \to C[I, K]$ 通过：
 
 1. $C[I, K] \\{ U_X \\} = A[I, J_X] \cdot B[J_X, K]$
 2. $C[I, K] = \text{AllReduce}(C[I, K] \\{ U_X\\})$

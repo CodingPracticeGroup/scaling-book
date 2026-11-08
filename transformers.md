@@ -88,7 +88,7 @@ _styles: >
   }
 ---
 
-## 数点乘（Counting Dots）
+## 数点乘（Counting Dots） {#数点乘-counting-dots}
 
 先设几个向量 $$x$$、$$y$$ 和矩阵 $$A$$、$$B$$，形状如下：
 
@@ -250,11 +250,11 @@ $$
 
 $$\small{\frac{\textrm{attention FLOPs}}{\textrm{matmul FLOPs}} = \frac{12BT^2NH}{18BTDF + 24BTDNH} = \frac{12BT^2D}{4*18 BTD^2 + 24 BTD^2} = \frac{12BT^2D}{96 BTD^2} = \frac{T}{8D}}$$
 
-结论是：**训练时，只有当 T>8D，点积注意力的 FLOPs 才会占大头**。D ~ 8k 时，这相当于 ~64K token。这也说得通：MLP 越大，注意力就越不要紧。对大模型来说，注意力的二次方开销其实并不是长上下文训练的拦路虎。但对小模型就不是了，比如 Gemma-27B 的 D=4608，大约到 37k 序列长度注意力就占大头了。<d-footnote>注意：一些现代开源模型会引入局部注意力或其他优化来降低注意力开销，这会改变这条 roofline。</d-footnote> Flash Attention 也能缓解长上下文的问题，我们在[附录 A](#appendix-a-how-does-flash-attention-work)简单讲讲。
+结论是：**训练时，只有当 T>8D，点积注意力的 FLOPs 才会占大头**。D ~ 8k 时，这相当于 ~64K token。这也说得通：MLP 越大，注意力就越不要紧。对大模型来说，注意力的二次方开销其实并不是长上下文训练的拦路虎。但对小模型就不是了，比如 Gemma-27B 的 D=4608，大约到 37k 序列长度注意力就占大头了。<d-footnote>注意：一些现代开源模型会引入局部注意力或其他优化来降低注意力开销，这会改变这条 roofline。</d-footnote> Flash Attention 也能缓解长上下文的问题，我们在[附录 A](#附录-a-flash-attention-是怎么工作的)简单讲讲。
 
 ## 其他相关计算
 
-### 稀疏化与混合专家（MoE）
+### 稀疏化与混合专家（MoE） {#稀疏化与混合专家-moe}
 
 混合专家（MoE）模型<d-cite key="moe"></d-cite>必须提一嘴：它把标准 Transformer 里那块单独的稠密 MLP，换成一组可以动态路由的独立 MLP。粗略地说，**MoE 就是一个普通的稠密模型，只是每层有 E 个 MLP 块**，而不是一个。每个 token 会激活其中 $k$ 个专家，通常 $k \ll E$。比值 $E / k$ 叫稀疏度，一般取 8 到 64 之间（例如 [DeepSeek v3](https://arxiv.org/pdf/2412.19437) 实际上是 $k=8$、$E=256$）。和稠密版本相比，参数量按 $O(E)$ 放大，而每个 token 实际激活的参数量只乘 $k$。
 
@@ -277,7 +277,7 @@ $$\frac{df}{dx} = \exp(g(x)) \cdot \frac{dg}{dx}$$
 
 这只是部分手段，并不完备。用 JAX 时，这些一般由 `jax.remat`/`jax.checkpoint` 控制（可[在这里](https://jax.readthedocs.io/en/latest/_autosummary/jax.checkpoint.html)了解更多）。
 
-### Key-Value（KV）缓存
+### Key-Value（KV）缓存 {#key-value-kv-缓存}
 
 正如[第 7 部分](../inference)会看到的，LLM 推理分两个阶段：预填充（prefill）和生成（generation）。
 
@@ -410,7 +410,7 @@ $$4 \; B \, T^{2} \, N \, H.$$
 
 ## 附录
 
-### 附录 A：Flash Attention 是怎么工作的？ {#appendix-a-how-does-flash-attention-work}
+### 附录 A：Flash Attention 是怎么工作的？ {#附录-a-flash-attention-是怎么工作的}
 
 对把 Transformer 扩展到超长上下文，传统的反对理由是：注意力的 FLOPs 和内存都随上下文长度二次增长。没错，注意力里 QK 乘积的形状是 $[B, T, S, N]$（B 是批大小，T、S 是 Q 和 K 的序列维，N 是头数），但这个说法有两个重要的保留意见：
 

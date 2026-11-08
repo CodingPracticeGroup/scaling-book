@@ -95,16 +95,16 @@ _styles: >
 
 你可以把 TensorCore 想成一台“特别会做矩阵乘法的机器”。它里面有三个部件值得认识：
 
-* **MXU**（矩阵乘法单元）是 TensorCore 的核心。在 TPU7x 上，它靠一种叫“脉动阵列”的结构，每 `4` 个时钟周期做一次 `bf16[8,256] @ bf16[256,256] -> f32[8,256]` 的矩阵乘法（细节见<a href="#appendix-b-how-does-a-systolic-array-work">附录 B</a>）。
+* **MXU**（矩阵乘法单元）是 TensorCore 的核心。在 TPU7x 上，它靠一种叫“脉动阵列”的结构，每 `4` 个时钟周期做一次 `bf16[8,256] @ bf16[256,256] -> f32[8,256]` 的矩阵乘法（细节见<a href="#附录-b-脉动阵列是怎么工作的">附录 B</a>）。
   * 在 TPU7x 上，2.2GHz 主频下，每个 MXU 大约能跑出 `5.8e14` bf16 FLOPs/秒。每块 TPU7x 芯片有 2 个 TensorCore，每个 TensorCore 有 2 个 MXU，所以整块 TPU7x 的 bf16 算力约为 `2.3e15` FLOPs/秒。
   * TPU 还支持用更低的精度做矩阵乘法，从而更快（比如每块 TPU7x 能做 `4.6e15` fp8 OP/秒）。
 
-* **VPU**（向量处理单元）负责做那些“通用”的数学运算，比如 ReLU 激活、向量之间的逐元素加减乘除，求和这类“归约”操作也在这里做。<a href="#appendix-a-more-on-tpu-internals">附录 A</a> 有更多细节。
+* **VPU**（向量处理单元）负责做那些“通用”的数学运算，比如 ReLU 激活、向量之间的逐元素加减乘除，求和这类“归约”操作也在这里做。<a href="#附录-a-更多-tpu-内部细节">附录 A</a> 有更多细节。
 * **VMEM**（向量内存）是 TensorCore 里的一块“临时草稿纸”内存，紧挨着计算单元。它比 HBM 小得多（比如 TPU7x 上每芯片只有 128 MiB，而 HBM 有 192 GiB），但它到 MXU 的带宽要高得多。VMEM 有点像 CPU 上的 L1/L2 缓存，但更大、而且由程序员自己控制。数据想被 TensorCore 拿来计算，必须先复制进 VMEM。
 
 **TPU 做矩阵乘法非常快、非常快**。这基本就是它擅长的事，而且做得很好。[TPU7x](https://cloud.google.com/tpu/docs/tpu7x#system_architecture) 是有史以来最强的 TPU 之一，每个核心能做到 `1.15e15` bf16 FLOPs/秒，整块芯片 `2.3e15`。一个由 9216 块芯片组成的整机群（pod）能做到 21 bf16 exaFLOPs/秒——那可是*天文数字*，是世界上最强的超算之一。而 Google 有一大堆这样的机器。<d-footnote>TPU——尤其是它的脉动阵列——之所以是这么强的硬件加速器，是因为矩阵乘法是少数几种“计算量按 $O(n^3)$ 增长、而内存只按 $O(n^2)$ 增长”的算法之一。正因如此，普通计算单元很容易被“算力”卡住，而不会被“内存带宽”卡住。</d-footnote>
 
-上面那张图里还画了几个别的部件，比如 SMEM 和标量单元，它们主要用来处理控制流，我们在<a href="#appendix-a-more-on-tpu-internals">附录 A</a>里简单提一下，不必深究。但 HBM 既重要又比较简单：
+上面那张图里还画了几个别的部件，比如 SMEM 和标量单元，它们主要用来处理控制流，我们在<a href="#附录-a-更多-tpu-内部细节">附录 A</a>里简单提一下，不必深究。但 HBM 既重要又比较简单：
 
 * **HBM**（高带宽内存）是一大块高速内存，用来存放 TensorCore 要用的数据（张量）。HBM 容量通常是几十到几百 GB（比如 TPU7x 的 HBM 是 [192GiB](https://cloud.google.com/tpu/docs/tpu7x#system_architecture)）。
 
@@ -311,7 +311,7 @@ $$\max\{T_{\text{math}}, T_{\text{comms}}\} = \max\left\{\frac{1.3 \times 10^{8}
 
 ## 附录
 
-### 附录 A：更多 TPU 内部细节 {#appendix-a-more-on-tpu-internals}
+### 附录 A：更多 TPU 内部细节 {#附录-a-更多-tpu-内部细节}
 
 这里我们更深入地看看 TPU 的内部运作。除非特别说明，给出的规格都是 TPU7x 的。
 
@@ -347,7 +347,7 @@ VPU 是 TPU 做向量运算的核心。它包含一台二维的 SIMD 向量机�
 
 给你一个体感：一个标量核心要指挥一台 VPU（包含 4096 个 ALU）、2 个 MXU、2 个 XLU 和多个 DMA 引擎。这种“一份控制对应海量计算”的悬殊比例，是硬件高效率的来源，但也限制了“以数据为条件、做有意思的向量化”的能力。
 
-### 附录 B：脉动阵列是怎么工作的？ {#appendix-b-how-does-a-systolic-array-work}
+### 附录 B：脉动阵列是怎么工作的？ {#附录-b-脉动阵列是怎么工作的}
 
 TPU 的 MXU 核心是一个 `256x256` 的脉动阵列（TPU v6e 之前是 `128x128`）。当它被喂满时，每 4 个时钟周期可以做一次 `bf16[8,256] @ bf16[256,256] -> f32[8,256]`<d-footnote>如果你不熟悉这种记号，它的意思是：把一个 `8x256`、元素为 bfloat16 的矩阵，乘以一个 `256x256`、元素为 bfloat16 的矩阵，并把结果存进一个 `8x256`、元素为 float32 的矩阵。</d-footnote>的乘法（TPUv6e 之前是 8 个周期做一次）<d-footnote>MXU 每 4 个周期可以载入 8 行 `f32` 输入并把它们转成 `bf16`；或者每 8 个周期载入 16 行 `bf16` 输入。无论哪种，都相当于每 4 个周期载入 8 行 `bf16` 输入。</d-footnote>。
 

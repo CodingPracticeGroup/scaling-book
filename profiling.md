@@ -119,7 +119,7 @@ ROOT %dot.4 = f32[16,128]{1,0} dot(f32[256,16]{1,0} %convert.3, f32[128,256]{1,0
 
 程序跑得比预期慢时，我们主要在 JAX 这一层动手改进性能。但这通常要求我们懂一些 HLO 的语义、了解代码在 TPU 上到底是怎么跑的。如果问题出在更底层，我们就掏出最后一个逃生舱：用 [Pallas](https://jax.readthedocs.io/en/latest/pallas/tpu/details.html) 写自定义内核。想看一个程序的 HLO 和运行时统计，就用 JAX profiler。
 
-## JAX Profiler：TPU 的多用途剖析器
+## JAX Profiler：TPU 的多用途剖析器 {#jax-profiler-tpu-的多用途剖析器}
 
 JAX 自带一个多用途 TPU 剖析器，里面一堆好用的工具，帮你搞清楚程序运行时 TPU 上发生了什么。用 `jax.profiler` 模块可以在程序运行时打点，记录从每个子过程的耗时、每个程序的 HLO、到内存占用的一切。比如这段代码会把一份 trace 写到 `/tmp/tensorboard`，可以在 TensorBoard 里查看（[这里](https://docs.jax.dev/en/latest/profiling.html#tensorboard-profiling)有一份手把手指南）：
 
@@ -213,7 +213,7 @@ HLO 其实不难读，而且它对弄清 trace 里某一段到底对应什么都
 
 非常建议多盯着几张 HLO 图看，练习把 HLO 算子对回你的代码。把鼠标悬在方框上，常常能直接看到定义这个函数的代码行。
 
-### 看一个（稍微）真实的 profile
+### 看一个（稍微）真实的 profile {#看一个-稍微-真实的-profile}
 
 [这个 Colab](https://colab.research.google.com/drive/1_6krERgtolH7hbUIo7ewAMLlbA4fqEF8?usp=sharing)里有一个假 Transformer 的 profile。赶时间的话，[这个](https://ui.perfetto.dev/#!/?s=fa9f13b487bde622707c1a503f9227c34594760a) Perfetto 链接至少能让你看到 Trace Viewer。我特意比平时更勤快地用 `jax.named_scope` 做了标注，方便你认出每段是什么。
 

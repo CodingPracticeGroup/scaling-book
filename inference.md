@@ -139,7 +139,7 @@ Transformer 训练好了，你想拿它生成一些新序列。_说到底，跑�
 
 接下来几小节，我们在预填充和生成两种场景下分别审视这些操作，问同一个问题：性能会被什么卡住？在单块加速器内部，我们是计算受限还是内存受限？要强调的是：预填充的答案和生成的答案会非常不一样。
 
-### 线性运算：是什么卡住了我们？
+### 线性运算：是什么卡住了我们？ {#线性运算-是什么卡住了我们}
 
 不管住在 MLP 块里还是注意力里，所有线性运算在概念上都是一样的：算术强度取决于批大小。这笔账在[第 1 部分](../roofline)算过，但值得再来一遍。看一次矩阵乘：$\text{bf16[B, D]}$ 的一批激活乘以 $\text{bf16[D, F]}$ 的矩阵。它可以是 MLP 里的大矩阵（$W_\text{in}$ 或 $W_\text{out}$），也可以是注意力里的小投影（$W_Q$、$W_K$、$W_V$、$W_O$）。做这次矩阵乘，要把两个数组都从 HBM 读进 MXU，乘完再把结果写回 HBM。和以前一样：
 
@@ -303,7 +303,7 @@ $$8192\ (T) \times 40\ (K) \times 128\ (H) \times 40\ (L) \times 2\ (\text{bytes
 
 对这个模型，加大批确实能提高吞吐，但回报衰减得很快。批到 16 就内存溢出（OOM）了；想到 240 附近，还得再加一个数量级的内存。更大的拓扑能改善延迟，但每芯片吞吐已经撞到墙上。
 
-现在假设参数总量不变，但神奇地把 KV 缓存缩小 5 倍（比如用 1:5 的 [GMQA](#tricks-for-improving-generation-throughput-and-latency)，即 40 个 Q 头共享 8 个 KV 头——细节见下一节）。
+现在假设参数总量不变，但神奇地把 KV 缓存缩小 5 倍（比如用 1:5 的 [GMQA](#提升生成吞吐与延迟的招数)，即 40 个 Q 头共享 8 个 KV 头——细节见下一节）。
 
 | 批大小                            |      1 |        8 |       16 |       32 |       64 |      240 |
 | :-------------------------------- | -----: | -------: | -------: | -------: | -------: | -------: |
@@ -316,7 +316,7 @@ KV 缓存变小后，回报依然递减，但每芯片理论吞吐能一路涨�
 
 <p markdown=1 class="takeaway">**要点**：除了参数量，KV 缓存的大小对模型最终的推理性能影响极大。要靠架构设计和运行时优化双管齐下，把它压住。</p>
 
-## 提升生成吞吐与延迟的招数 {#tricks-for-improving-generation-throughput-and-latency}
+## 提升生成吞吐与延迟的招数 {#提升生成吞吐与延迟的招数}
 
 自最初的 [Attention is All You Need 论文](https://arxiv.org/abs/1706.03762)以来，人们发明了许多让模型更高效的技术，很多就是冲着 KV 缓存去的。总的原则是：KV 缓存越小，越容易在不掉延迟的前提下加大生成的批和上下文，围绕 Transformer 的那些系统设施（比如请求缓存）也更好过。抛开对质量的影响不谈，我们可能看到：
 
@@ -482,7 +482,7 @@ $$T_\text{ICI comms} > T_\text{HBM comms} \rightarrow \frac{W_\text{hbm}}{W_\tex
 
 {% include figure.liquid path="assets/img/prefix-caching-trie.png" class="img-fluid" caption="<b>图：</b>用 LRU 字典树实现的 KV 前缀缓存。共享前缀，KV 内存就不必重复存。来源：<a href=\"https://research.character.ai/optimizing-inference/?ref=blog.character.ai\">Character.ai 博客</a>。" %}
 
-### 看一个真实实现：JetStream
+### 看一个真实实现：JetStream {#看一个真实实现-jetstream}
 
 Google 开源了一个实现了这套逻辑的库，叫 [JetStream](https://github.com/google/JetStream)。服务器有一组“预填充引擎”和“生成引擎”，通常在不同的 TPU 切片上，由一个总控（controller）统一编排。预填充在“[prefill thread](https://github.com/AI-Hypercomputer/JetStream/blob/c0f83127c16d7861cacc560303a28404c6cbb24c/jetstream/core/orchestrator.py#L499)”里跑，生成在“[generate thread](https://github.com/AI-Hypercomputer/JetStream/blob/c0f83127c16d7861cacc560303a28404c6cbb24c/jetstream/core/orchestrator.py#L629)”里跑，还有一条“[transfer thread](https://github.com/AI-Hypercomputer/JetStream/blob/c0f83127c16d7861cacc560303a28404c6cbb24c/jetstream/core/orchestrator.py#L592)”负责把 KV 缓存从预填充切片搬到生成切片。
 

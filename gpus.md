@@ -192,7 +192,7 @@ GPU 出道时是给电子游戏渲染画面的。可自从深度学习起飞，�
 
 **TPU 的快速缓存大得多。**TPU 的 VMEM 远多于 GPU 的 SMEM（+TMEM），而且可以拿来回存权重和激活，取用极快。若能稳定地把模型权重放进/预取进 VMEM，LLM 推理可以更快。
 
-### 练习 1：GPU 硬件
+### 练习 1：GPU 硬件 {#练习-1-gpu-硬件}
 
 下面几道题考一考上面的内容。答案就在折叠里，但强烈建议纸笔在手先做再看。
 
@@ -284,7 +284,7 @@ Hopper 一代（NVLink 4.0）每条 NVLink 链路有 25GB/s 全双工带宽<d-fo
 
 Blackwell（B200）的节点是 8 卡；GB200NVL72 支持 72 卡的更大 NVLink 域。表中把 8 卡和 72 卡两种系统都列了出来。
 
-### 练习 2：GPU 节点
+### 练习 2：GPU 节点 {#练习-2-gpu-节点}
 
 再来几道组网问答。这些题特别值得亲手算，算一遍通信路径才真的长在手上。
 
@@ -345,7 +345,7 @@ GPU 交换网络理论上可以靠加交换机、加层级一直扩下去——�
 {% include figure.liquid path="assets/gpu/gb200-superpod.png" class="img-fluid" caption="<b>图：</b>GB200 DGX SuperPod，共 576 张 GPU。最下层的每个机架装 72 张 GB200。" %}
 
 数一数单个节点的出口（上图橙线）：`4 * 18 * 400 / 8 = 3.6TB/s`，通向叶层——正好是 H100 节点的 9 倍（节点里的卡也是 9 倍）。这就是说：节点出口带宽这个“命门”被抬高了许多_许多_，跨节点的集合通信带宽甚至可能比节点内还低。
-更多讨论见[附录 A](#appendix-a-how-does-this-change-with-gb200)。
+更多讨论见[附录 A](#附录-a-换成-gb200-会怎样)。
 
 |   节点类型   | 每节点 GPU 数 | GPU 出口带宽 | 节点出口带宽 |
 | :---------: | :-----------: | :------------------: | :-------------------: |
@@ -355,7 +355,7 @@ GPU 交换网络理论上可以靠加交换机、加层级一直扩下去——�
 
 <p markdown=1 class="takeaway">**要点**：GB200 NVL72 SuperPod 把节点规模和节点出口带宽同时拉高一大截，我们的屋顶线因此大不一样。</p>
 
-### 练习 3：节点之外
+### 练习 3：节点之外 {#练习-3-节点之外}
 
 **问题 1 [胖树拓扑]：**用上文那张 DGX H100 的图，算出整个 1024 卡 pod 在节点层的二分带宽，并验证每条链路、每台交换机的带宽恰好保证全二分。*提示：链路和交换机两头都要算。*
 
@@ -537,7 +537,7 @@ $$T_\text{comms} = \frac{2 \cdot D \cdot F \cdot 256}{Y \cdot \text{12.8e12}} = 
 
 <p markdown=1 class="takeaway">**要点**：多轴分片并存时，外层归约的成本按“内轴横跨的节点数”成比例减少。</p>
 
-### 练习 4：集合通信
+### 练习 4：集合通信 {#练习-4-集合通信}
 
 **问题 1 [SU 上的 AllGather]：**只看单个 SU：M 个节点、每节点 N 张 GPU。一次 AllGather 中，节点层交换机精确地收/发多少字节？顶层交换机呢？
 
@@ -736,7 +736,7 @@ $$T_\text{per-layer comms} \approx 1.5 \cdot \frac{2BD}{W \cdot N_\text{layers}}
 
 这也是稠密模型，各项都算轻松。16 路 PP 把数据并行 AllReduce 的成本除以 16，临界批随之降了下来。
 
-### 一句话总结：LLM 在 GPU 上怎么扩
+### 一句话总结：LLM 在 GPU 上怎么扩 {#一句话总结-llm-在-gpu-上怎么扩}
 
 退后一步，把这章学到的串成一张总图：
 
@@ -751,7 +751,7 @@ $$T_\text{per-layer comms} \approx 1.5 \cdot \frac{2BD}{W \cdot N_\text{layers}}
 * 更大的稠密模型：1-2 节点 TP + 跨很多节点的 PP + 纯数据并行，这个组合就很好。
 * MoE：上面通用；另外可以做专家并行，且优先于 TP。若 $F > 8 * C / W_\text{node}$，多节点专家并行可以放开了做；否则就只到 2 节点上下。
 
-### 练习 5：LLM 屋顶线
+### 练习 5：LLM 屋顶线 {#练习-5-llm-屋顶线}
 
 **问题 1 [B200 屋顶线]：**B200 DGX SuperPod（**不是 GB200 NVL72**）节点内带宽翻倍（出口 900GB/s），扩容网络照旧（400GB/s）（[出处](https://docs.nvidia.com/dgx-superpod/reference-architecture-scalable-infrastructure-b200/latest/network-fabrics.html)）。总算力见前文表格。模型并行和数据并行的屋顶线会怎么变？
 
@@ -824,7 +824,7 @@ GPU 的好材料汗牛充栋，个人常翻的有：
 * [Making Deep Learning Go Brrrr From First Principles](https://horace.io/brrr_intro.html)：更偏 GPU 和 PyTorch 的屋顶线与性能工程入门。
 * [Cornell Understanding GPU Architecture site](https://cvw.cac.cornell.edu/gpu-architecture)：气质与本书相近的指南，更具体地对比 GPU 与 CPU 的内部。
 
-## 附录 A {#appendix-a-how-does-this-change-with-gb200}：换成 GB200 会怎样？
+## 附录 A：换成 GB200 会怎样？ {#附录-a-换成-gb200-会怎样}
 
 Blackwell 带来一堆组网大改，包括 NVLink 5——NVLink 总带宽直接翻倍（900GB/s）。B200 仍是 8 卡节点、和 H100 相同；但 GB200 系统（B200 GPU + Grace CPU 的组合）把 NVLink 域做得大得多（NVL72 为 72 卡，理论上可到 576）。NVLink 域变大，等效于节点出口带宽同步放大，节点以上的集合通信因此变便宜。
 
@@ -840,7 +840,7 @@ Blackwell 带来一堆组网大改，包括 NVLink 5——NVLink 总带宽直接
 
 **Grace Hopper：**NVIDIA 还卖 GH200 / GB200 这类“GPU + Grace CPU”一体机。比如 GH200 是 1 张 H200 配 1 颗 Grace CPU，GB200 是 2 张 B200 配 1 颗 Grace CPU。好处在于 CPU 和 GPU 之间是满速 NVLink 直连（NVLink C2C），CPU 到 GPU 带宽极高，把参数卸载到主机内存非常合算。换句话说，对任意一张 GPU 来说，读主机内存的带宽和读另一张 GPU 的 HBM 完全相同。
 
-## 附录 B：更多组网细节
+## 附录 B：更多组网细节 {#附录-b-更多组网细节}
 
 这是一台 NVLink 4 交换机的图：共 64 个 NVLink4 端口（每个占 2 条物理链路），加一个大的横排（crossbar）负责跨链路交换。TPU 则不然，用的是带镜片的可动态重配光交换机。
 
