@@ -272,7 +272,7 @@ $$\frac{df}{dx} = \exp(g(x)) \cdot \frac{dg}{dx}$$
 
 要避免重算，就得把前向的 $$g(x)$$ 和 $$\exp(g(x))$$ 都存下来。为了不用存这么多内存，我们可以只保存一部分中间激活。下面是我们常用的几种策略。
 
-* **按块重算（Block remat）**：只保存每层的输入。这是我们用到的最激进做法，每层只存 1 个检查点，上面的例子只需存 4.2TB。代价是反向传播时几乎要把全部前向 FLOPs 重做一遍，总计算量就从 $$6 \cdot \text{num params} \cdot \text{num tokens}$$ 涨到约 $$8 \cdot \text{num params} \cdot \text{num tokens}$$（即 6/8 × 参数量 × token 数）。
+* **按块重算（Block remat）**：只保存每层的输入。这是我们用到的最激进做法，每层只存 1 个检查点，上面的例子只需存 4.2TB。代价是反向传播时几乎要把全部前向 FLOPs 重做一遍，总计算量就从 $$6 \cdot \text{num params} \cdot \text{num tokens}$$ 涨到约 $$8 \cdot \text{num params} \cdot \text{num tokens}$$。
 * **只保存大矩阵乘的输出：** 另一种简单策略是只保存大型矩阵乘的结果。这样反向传播时不用重算任何大矩阵乘，但其他激活函数和注意力的部分还是要重算。这能把上面每层 20 份激活降到 7 份左右。
 
 这只是部分手段，并不完备。用 JAX 时，这些一般由 `jax.remat`/`jax.checkpoint` 控制（可[在这里](https://jax.readthedocs.io/en/latest/_autosummary/jax.checkpoint.html)了解更多）。
