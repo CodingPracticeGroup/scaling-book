@@ -121,7 +121,7 @@ _styles: >
 - [**Transformer Inference Arithmetic**](https://kipp.ly/transformer-inference-arithmetic/)：一篇与本书想法高度一致的博文，配图画得极好。
 - [**Stanford CS336 Slides and Videos**](https://stanford-cs336.github.io/spring2025/index.html#coursework)：斯坦福的一门出色课程，覆盖 LLM 训练与服务的诸多细节，习题很有用——作业 1 和作业 2 尤其切题。
 - [**Stas Bekman's ML Engineering Handbook**](https://github.com/stas00/ml-engineering)：一本极其实用的 ML 基础设施手册，讲的都是本书没顾上的话题：怎么和云厂商打交道、怎么管理集群、GPU 吞吐实测数字。
-- [**ezyang's blog**](https://blog.ezyang.com/2026/01/computing-sharding-with-einsum/)：PyTorch 负责人关于分片 + PyTorch 的博客，包括一篇 [PyTorch 内部机制指南](https://blog.ezyang.com/2019/05/pytorch-internals/)和一篇[分片矩阵乘笔记](https://blog.ezyang.com/2026/01/computing-sharding-with-einsum/)，此外还有许多好东西。
+- [**ezyang's blog**](https://blog.ezyang.com/2026/01/computing-sharding-with-einsum/)：一篇围绕分片 + PyTorch 的博客，包括一篇 [PyTorch 内部机制指南](https://blog.ezyang.com/2019/05/pytorch-internals/)和一篇[分片矩阵乘笔记](https://blog.ezyang.com/2026/01/computing-sharding-with-einsum/)，此外还有许多好东西。
 - [**The Anatomy of Collective Communication**](https://www.aleksagordic.com/blog/collective-operations)：与本书风格相通的 GPU/TPU 集合通信详解，其中 N 维网格与 GPU 集合通信部分讲得比本书更好。
 
 这个领域依然缺少成体系的写作，希望本书能带动更多人动笔。我们也相信这是很值得钻研和研究的领域——很多时候，手头没有多少加速卡也照样能研究。
