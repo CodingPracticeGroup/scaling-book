@@ -94,13 +94,13 @@ _styles: >
 
 下面这个例子，是一个二维数组 **A** 被分片到了 4 块 TPU 上：
 
-{% include figure.liquid path="assets/img/sharding-example.png" class="img-fluid" caption="<b>图：</b>一个形状为 <b>A</b>[I, J] 的数组被分片到 4 台设备上。两个维度都被对半分成两半、各放在 2 台设备上，分片方式记作 <b>A</b>[I<sub>X</sub>, J<sub>Y</sub>]。每块 TPU 只持有整个数组的 1/4。" %}
+{% include figure.liquid path="assets/img/sharding-example.png" class="img-fluid" caption="<b>图：</b>一个形状为 <b>A</b>[I, J] 的数组被分片到 4 台设备上。两个维度各切成两半，分别放在 2 台设备上，分片方式记作 <b>A</b>[I<sub>X</sub>, J<sub>Y</sub>]。每块 TPU 只持有整个数组的 1/4。" %}
 
 注意：分片后的数组仍然有一个*全局*的、也叫*逻辑*的形状，比如 `(4, 128)`，跟没分片时一模一样；但它同时还有一个*设备本地形状*，比如 `(2, 64)`，它告诉你每块 TPU 实际拿着多大的数据（上面这张图里，每块 TPU 持有整个数组的 ¼）。下面把它推广到任意数组。
 
 ### 一套统一的分片记号
 
-我们用一种“*命名轴记号*”的变体来描述张量是怎么按块分到各设备上的：我们假设存在一个二维或三维的设备格子，叫**设备网格（device mesh）**，它的每条轴都有自己的**网格轴名**，**比如 X**、**Y 和 Z。** 只要说明数组的每个被命名的维度沿着哪条物理网格轴划分，就能描述矩阵数据在整个网格上的摆法。这个“哪个维度沿哪条网格轴分”的分配方案，就叫一个**分片（sharding）**。
+我们用一种“*命名轴记号*”的变体来描述张量是怎么按块分到各设备上的：我们假设存在一个二维或三维的设备格子，叫**设备网格（device mesh）**，它的每条轴都有自己的**网格轴名**，比如 **X**、**Y** 和 **Z**。只要说明数组的每个被命名的维度沿着哪条物理网格轴划分，就能描述矩阵数据在整个网格上的摆法。这个“哪个维度沿哪条网格轴分”的分配方案，就叫一个**分片（sharding）**。
 
 **例子（上面那张图）**：对上图来说，我们有：
 * **网格：** 设备网格为 `Mesh(devices=((0, 1), (2, 3)), axis_names=('X', 'Y'))`，意思是：有一台 2x2 格子排布的 4 块 TPU，两条轴分别叫 $X$ 和 $Y$。
@@ -154,7 +154,7 @@ $A[I_X, J_Y]$ 表示 **I** 逻辑轴沿 **X** 网格轴划分、**J** 维沿 **Y
 
 ### 怎么用代码来描述这件事？
 
-前面我们一直没碰代码，现在正好抢先看一眼。JAX 有一套命名式分片语法，和我们上面讲的抽象记号几乎一模一样。[第 10 部分](../jax-stuff)会细讲，这里先给个预告。你可以在这个 Google Colab [这里](https://colab.research.google.com/drive/15cxw66eABwZPG-V4QFmbLfiykPFf_gaP?usp=sharing)亲手玩一玩，并用性能分析工具看看 JAX 如何处理各种分片。这段代码做了 3 件事：
+前面我们一直没碰代码，现在正好抢先看一眼。JAX 有一套命名式分片语法，和我们上面讲的抽象记号几乎一模一样。[第 10 部分](../jax-stuff)会细讲，这里先给个预告。你可以在[这个 Google Colab](https://colab.research.google.com/drive/15cxw66eABwZPG-V4QFmbLfiykPFf_gaP?usp=sharing)里亲手玩一玩，并用性能分析工具看看 JAX 如何处理各种分片。这段代码做了 3 件事：
 
 1. 建一个 **jax.Mesh**，把 8 块 TPU 组成一个 4x2 的网格，并给两条轴起名叫 'X' 和 'Y'。
 2. 建矩阵 A 和 B：A 沿两个维度都分片，B 沿输出维分片。
@@ -334,7 +334,7 @@ $$T_{total} = \frac{V}{W_\text{ici}}$$
 
 注意这**和 $X$ 无关！** 这挺惊人——它意味着虽然我们的 TPU 只是“就近相连”的，但这种就近连接并不影响速度，瓶颈只在每条链路本身的快慢。
 
-<p markdown=1 class="takeaway">**要点：** 在"带宽受限"的区间里做 AllGather（或 ReduceScatter、AllReduce），实际通信时间只取决于数组大小和可用带宽，跟数组被分到了多少台设备上无关！</p>
+<p markdown=1 class="takeaway">**要点：** 在“带宽受限”的区间里做 AllGather（或 ReduceScatter、AllReduce），实际通信时间只取决于数组大小和可用带宽，跟数组被分到了多少台设备上无关！</p>
 
 **关于 ICI 延迟的说明：** 每跳 ICI 链路都有一点“起步开销”，跟传多少数据无关，通常约 1us。所以当数组 $$A$$ 非常小、每跳数据本来用不了 1us 时，就会进入“延迟受限”区间，这时计算结果*会*跟 $X$ 有关。
 
@@ -377,7 +377,7 @@ $$T_{total} = \max \left[ \frac{T_{min} \cdot \sum_{i} |X_i|}{2}, \frac{V}{W_\te
 
 {% enddetails %}
 
-<p markdown=1 class="takeaway">**注意：** 对于 `{'X': 16, 'Y': 4}` 这样的二维网格，网格轴并不要求一一对应某条具体的*硬件*轴。比如它也可以描述一个 4x4x4 的 TPU v5p 立方体、其中两条轴都挂在 $X$ 名下。后文讲"跨多轴的数据并行"时会用到这一点。</p>
+<p markdown=1 class="takeaway">**注意：** 对于 `{'X': 16, 'Y': 4}` 这样的二维网格，网格轴并不要求一一对应某条具体的*硬件*轴。比如它也可以描述一个 4x4x4 的 TPU v5p 立方体、其中两条轴都挂在 $X$ 名下。后文讲“跨多轴的数据并行”时会用到这一点。</p>
 
 ### 情形 3：两个乘数的收缩维都被分片了 {#case-3-both-multiplicands-have-sharded-contracting-dimensions}
 
@@ -395,7 +395,7 @@ $$\textbf{A}[I, J_X] \cdot_\text{LOCAL} \textbf{B}[J_X, K] \rightarrow C[I, K] \
 
 $$A \cdot B = \sum_{i=1}^{P} \underbrace{A_{:,i} \otimes B_{i,:}}_{\in \mathbb{R}^{n \times m}}$$
 
-其中 ⊗ 是外积。这样，如果 **X** 轴上的第 **i** 块 TPU 存着 **A** 的第 **i** 列和 **B** 的第 **i** 行，它就能本地算出 $$A_{:,i} \otimes B_{i,:} \in \mathbb{R}_{n\times m}$$。这个矩阵的每个元素，恰好是 **A • B** 对应元素求和式里的第 **i** 项。我们还差把沿网格轴 **X** 拆开的那个、对 **P** 的求和补上，才能得到完整的 **A • B**。把 **A**、**B** 按块（也就是按分片）写、再对结果的每一块求和，道理完全一样。
+其中 ⊗ 是外积。这样，如果 **X** 轴上的第 **i** 块 TPU 存着 **A** 的第 **i** 列和 **B** 的第 **i** 行，它就能本地算出 $$A_{:,i} \otimes B_{i,:} \in \mathbb{R}_{n\times m}$$。这个矩阵的每个元素，恰好是 **A • B** 对应元素求和式里的第 **i** 项。还缺的是对 **P** 的那一步求和——它被拆到了网格轴 **X** 的各台设备上——补上它，才能得到完整的 **A • B**。把 **A**、**B** 按块（也就是按分片）写、再对结果的每一块求和，道理完全一样。
 
 用一次沿 **X** 轴的完整 **AllReduce** 就能完成这个求和：
 
@@ -410,7 +410,7 @@ $$\textbf{AllReduce}_Y A[I_X, J] \{U_Y\} \rightarrow A[I_X, J]$$
 
 也就是它只是去掉 $\{U_Y\}$ 这个后缀，别的一概不变。
 
-**AllReduce 有多贵？** 可以这样想象它的工作方式：每台设备把自己这份发给邻居，把收到的所有份加在一起。显然它比 AllGather 更贵，因为每个“分片”都有整个数组那么大。一般说，**AllReduce 的代价是 AllGather 的两倍。** 有一种看法很直观：**AllReduce** 可以由两个别的原语拼成：一次 **ReduceScatter** 加一次 **AllGather**。和 AllReduce 一样，ReduceScatter 也能消掉部分和，但输出是沿某条维“散开”（分片）的状态。AllGather 再把这些碎片收集起来，“取消分片/复制成完整”的那条逻辑轴。
+**AllReduce 有多贵？** 可以这样想象它的工作方式：每台设备把自己这份发给邻居，把收到的所有份加在一起。显然它比 AllGather 更贵，因为每个“分片”都有整个数组那么大。一般说，**AllReduce 的代价是 AllGather 的两倍。** 有一种看法很直观：**AllReduce** 可以由两个别的原语拼成：一次 **ReduceScatter** 加一次 **AllGather**。和 AllReduce 一样，ReduceScatter 也能消掉部分和，但输出的结果是沿某条维“散开”（分片）的状态。接着 AllGather 再把这些碎片收集起来，沿那条逻辑轴取消分片、复制成完整。
 
 $$\begin{align*}
 \textbf{ReduceScatter}_{Y,J} : A[I_X,J] \{U_Y\} \rightarrow &\ A[I_X, J_Y] \\
