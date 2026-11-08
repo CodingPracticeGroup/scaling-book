@@ -93,7 +93,7 @@ _styles: >
 
 {% include figure.liquid path="assets/img/tpu-chip.png" class="img-fluid" caption="<b>图：</b>一块 TPU 芯片的基本组成。左边灰色的那个框就是 TensorCore，里面包含矩阵乘法单元（MXU）、向量单元（VPU）和向量内存（VMEM）。" %}
 
-你可以把 TensorCore 看成一台“矩阵乘法做得特别好的机器”，但它还有几个值得一提的功能。TensorCore 里有三个关键部件：
+你可以把 TensorCore 想成一台“特别会做矩阵乘法的机器”。它里面有三个部件值得认识：
 
 * **MXU**（矩阵乘法单元）是 TensorCore 的核心。在 TPU7x 上，它靠一种叫“脉动阵列”的结构，每 `4` 个时钟周期做一次 `bf16[8,256] @ bf16[256,256] -> f32[8,256]` 的矩阵乘法（细节见<a href="#appendix-b-how-does-a-systolic-array-work">附录 B</a>）。
   * 在 TPU7x 上，2.2GHz 主频下，每个 MXU 大约能跑出 `5.8e14` bf16 FLOPs/秒。每块 TPU7x 芯片有 2 个 TensorCore，每个 TensorCore 有 2 个 MXU，所以整块 TPU7x 的 bf16 算力约为 `2.3e15` FLOPs/秒。
@@ -144,7 +144,7 @@ _styles: >
 
 这种环面（torus）结构能把任意两个节点之间的最大距离从 $N$ 缩小到 $N / 2$，让通信快得多。TPU 还有一种“扭曲环面（twisted torus）”配置，把环面按莫比乌斯环那样扭一下再连起来，进一步缩短节点之间的平均距离。
 
-**TPU 整机群（用 ICI 连起来）可以做得非常大：** TPU7x 的最大整机群（叫 **superpod**）由 9216 块芯片组成，它是若干个 `4x4x4` 的“立方块”拼起来的<d-footnote>所谓“可重构”，是指可以用一台共享的光路交换机（OCS），把这些立方块动态地拼成任意 3D 拓扑，如 4nx4mx4k。OCS 本质上就是一条可重新配置的连接，ICI 带宽不变。它只是让我们能把立方块连起来，同时保留那条绕回的链路。</d-footnote>，再通过[光纤绕回链路](https://arxiv.org/pdf/2208.10041)相连，我们可以重新配置这些链路，去连成非常巨大的拓扑。
+**TPU 整机群（用 ICI 连起来）可以做得非常大：** TPU7x 的最大整机群叫 **superpod**，有 9216 块芯片。它由若干个 `4x4x4` 的“立方块”拼成<d-footnote>所谓“可重构”，是指可以用一台共享的光路交换机（OCS），把这些立方块动态地拼成任意 3D 拓扑，如 4nx4mx4k。OCS 本质上就是一条可重新配置的连接，ICI 带宽不变。它只是让我们能把立方块连起来，同时保留那条绕回的链路。</d-footnote>，立方块之间靠[光纤绕回链路](https://arxiv.org/pdf/2208.10041)互连。这些链路可以重新配置，因此能拼出非常巨大的拓扑。
 
 {% include figure.liquid path="assets/img/tpu-rack.png" class="img-fluid" %}
 
@@ -265,7 +265,7 @@ $$\max\{T_{\text{math}}, T_{\text{comms}}\} = \max\left\{\frac{1.3 \times 10^{8}
 
 当 $\frac{6.7 \times 10^{7} + 2 \times 10^{4} \cdot B}{8.2 \times 10^{11}} < \frac{1.3 \times 10^{8} \cdot B}{3.94 \times 10^{14}}$ 时，我们是“算力受限”的，等价于 $B > 267$。这比我们在[第 1 节](../roofline)算出的 240 略大，因为我们这次把 $D$ 和 $F$ 的完整影响都算进去了。
 
-（2）如果改成从 VMEM 读，我们把 VMEM 到 MXU 的带宽看成 HBM $\leftrightarrow$ VMEM 带宽的 22 倍。这会把读数据的分母从 8.2e11 变成 1.80e13，于是得到 $B > 11$。注意实际上我们不可能把全部 VMEM 带宽都用来到权重，所以实际会更接近 20。
+（2）如果改成从 VMEM 读，我们把 VMEM 到 MXU 的带宽看成 HBM $\leftrightarrow$ VMEM 带宽的 22 倍。这会把读数据的分母从 8.2e11 变成 1.80e13，于是得到 $B > 11$。注意实际上我们不可能把全部 VMEM 带宽都用来到权重上，所以实际会更接近 20。
 
 {% enddetails %}
 
@@ -331,7 +331,7 @@ VPU 是 TPU 做向量运算的核心。它包含一台二维的 SIMD 向量机�
 
 {% details 点此查看答案。 %}
 
-*答案*：每个周期，每个核心能在 `8 * 128` 个 ALU 上执行 4 条向量指令。也就是每核心 `8 * 128 * 4` FLOPs/周期，即 `8 * 128 * 4 * 2.2e9 = 9e12 FLOPs/s`（如果是 bfloat16，则是 1.8e13 bfloat16 FLOPs/s，因为打包好的 bfloat16 VREG 装的下元素是 float32 的两倍）。注意这比 MXU 的算力（每核心约 `1.2e15`）小得多（bfloat16 下大约差 64 倍）。
+*答案*：每个周期，每个核心能在 `8 * 128` 个 ALU 上执行 4 条向量指令。也就是每核心 `8 * 128 * 4` FLOPs/周期，即 `8 * 128 * 4 * 2.2e9 = 9e12 FLOPs/s`（如果是 bfloat16，则是 1.8e13 bfloat16 FLOPs/s，因为打包好的 bfloat16 VREG 装得下的元素是 float32 的两倍）。注意这比 MXU 的算力（每核心约 `1.2e15`）小得多（bfloat16 下大约差 64 倍）。
 
 {% enddetails %}
 
