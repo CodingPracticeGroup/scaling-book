@@ -565,7 +565,7 @@ for i in range(num_layers - 1, -1, -1):
 
 第二种办法是仔细重叠三种计算：前向矩阵乘 $W_i @ x_i$、反向的 $dx$ 矩阵乘 $W_i @ \partial L / \partial x_{i+1}$、以及 $dW$ 矩阵乘 $\partial L / \partial x_{i+1} @ x_i$。它们各自都有计算量，互相错开填满空隙，就能把气泡完全藏起来。下面是 DeepSeek v3 论文<d-cite key="DeepSeek3"></d-cite>里的“无气泡”流水线调度图：
 
-{% include figure.liquid path="assets/img/deepseek-pipeline.png" class="img-fluid" caption="<b>图：</b>DeepSeek v3 的流水线调度（出自其<a href=\"https://arxiv.org/pdf/2412.19437\">论文</a>）。橙色是前向矩阵乘，绿色是 dL/dx 矩阵乘，蓝色是 dL/dW 矩阵乘。优先安排反向的 dL/dx 乘法，就能避免让 FLOPs 被'晾'在那里。" %}
+{% include figure.liquid path="assets/img/deepseek-pipeline.png" class="img-fluid" caption="<b>图：</b>DeepSeek v3 的流水线调度（出自其<a href=\"https://arxiv.org/pdf/2412.19437\">论文</a>）。橙色是前向矩阵乘，绿色是 dL/dx 矩阵乘，蓝色是 dL/dW 矩阵乘。优先安排反向的 dL/dx 乘法，就能避免让 FLOPs 被‘晾’在那里。" %}
 
 由于 TPU（整机群互联范围大）对流水线的依赖较低，我们不再深挖，但弄懂流水线的关键瓶颈仍是个很好的练习。
 

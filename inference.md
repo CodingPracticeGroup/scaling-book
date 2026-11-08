@@ -2,7 +2,7 @@
 layout: distill
 title: "关于 Transformer 推理的一切"
 # permalink: /main/
-description: "做推理和做训练可以非常不一样。部分原因在于推理多了一个新因素要考虑：延迟。这一节我们从'采样一个新 token'讲起，一路讲到如何把一个大型 Transformer 高效地铺在很多加速器切片上、组成一台推理引擎。"
+description: "做推理和做训练可以非常不一样。部分原因在于推理多了一个新因素要考虑：延迟。这一节我们从‘采样一个新 token’讲起，一路讲到如何把一个大型 Transformer 高效地铺在很多加速器切片上、组成一台推理引擎。"
 date: 2025-02-04
 future: true
 htmlwidgets: true
@@ -386,7 +386,7 @@ $$T_\text{ICI comms} > T_\text{HBM comms} \rightarrow \frac{W_\text{hbm}}{W_\tex
 
 **我们还多了一个需要分片的数据结构——KV 缓存。**同样，尽量别复制缓存，因为它是注意力延迟的主要来源。做法是先沿头维对 KV 做 Megatron 式分片。但这最多只能切 $K$ 路；对 KV 头不多的模型，先把头维能切尽切，再沿批维切，即 $\text{KV}[2, B_Z, S, K_Y, H]$。这样 KV 缓存就彻底分布式化了。
 
-{% include figure.liquid path="assets/img/esta-figure.png" class="img-fluid" caption="<b>图：</b>两种注意力实现的对比：(a) 多头注意力 + 纯模型分片；(b) 多查询注意力 + KV 缓存按批分片。注意 (b) 需要两次额外的 AllToAll，把激活从'模型分片'格式转成'按批分片'格式，才能去和 KV 缓存做运算。" %}
+{% include figure.liquid path="assets/img/esta-figure.png" class="img-fluid" caption="<b>图：</b>两种注意力实现的对比：(a) 多头注意力 + 纯模型分片；(b) 多查询注意力 + KV 缓存按批分片。注意 (b) 需要两次额外的 AllToAll，把激活从‘模型分片’格式转成‘按批分片’格式，才能去和 KV 缓存做运算。" %}
 
 代价是每个注意力层两次 AllToAll——一次把 Q 激活转到批分片格式以便按批算注意力，一次把按批分片的注意力输出转回纯模型分片格式。
 
@@ -423,7 +423,7 @@ $$T_\text{ICI comms} > T_\text{HBM comms} \rightarrow \frac{W_\text{hbm}}{W_\tex
 
 最省事的办法是先跑一批预填充、再跑一批生成：
 
-{% include figure.liquid path="assets/img/batched-prefill.png" class="img-fluid" caption="<b>图：</b>最简单的做法：把请求攒起来，服务器交替执行'一批预填充'和'对所有序列反复调用生成直到完成'。" %}
+{% include figure.liquid path="assets/img/batched-prefill.png" class="img-fluid" caption="<b>图：</b>最简单的做法：把请求攒起来，服务器交替执行‘一批预填充’和‘对所有序列反复调用生成直到完成’。" %}
 
 这很好实现，多数代码库的第一版推理就是这么写的。但它有几个毛病：
 
@@ -657,7 +657,7 @@ B 很大时，墙钟时间基本不变：加芯片的同时，要搬的数据量
 
 {% include figure.liquid path="assets/img/all-gather.gif" class="img-fluid" %}
 
-延迟优先的推理搬的数据很少，所以激活上的集合通信常常落在延迟项里（小批尤其如此）。很好直观感受延迟：数一数完成一次通信要“跳”过多少跳。
+延迟优先的推理搬的数据很少，所以激活上的集合通信常常落在延迟项里（小批尤其如此）。很好的直观感受延迟的办法：数一数完成一次通信要“跳”过多少跳。
 
 在 TPU 上，如果通信里“与张量大小有关”的部分每跳不足 1 微秒（一跳 = 一对相邻设备间的通信），真正卡我们的就是分发这次集合通信本身的固定开销。ICI 单向带宽 `4.5e10`，于是当 $$(\text{bytes} / n_\text{shards}) / 4.5e10 < 1e-6$$ 时通信进入延迟受限。8 路 Megatron 分片下，这就是 `buffer_size < 360kB`。**这个数在推理里真不算小：**`BS=16`、`D=8192` 的 int8 激活才 `16*8192=131kB`——我们已经延迟受限制了。
 
@@ -681,7 +681,7 @@ B 很大时，墙钟时间基本不变：加芯片的同时，要搬的数据量
 
 **为什么这是延迟上的胜利？**这套做法算下来，每个 token 仍要付出相当于大模型一次前向的 FLOPs——但许多 token 可以凑在一起，一次前向全算完。我们利用了“本来就没到计算受限”这个事实，多给几个 token 打分几乎不花额外时间。
 
-平均到每个被接受的 token，FLOPs 其实更贵了（有的会被拒绝，还得跑草稿模型），但硬件里榨出的 FLOPs 更多，而小模型又便宜，总体是赚的。另外多个步共享 KV 缓存的读取，**长上下文下投机解码还能提升吞吐。**由于所有 token 都经过大模型校验，采样分布完全没有改变（非贪心时具体轨迹会不同，但分布不变）。
+平均到每个被接受的 token，FLOPs 其实更贵了（有的会被拒绝，还得跑草稿模型），但硬件里榨出的 FLOPs 更多，而小模型又便宜，总体是赚的。而且多个步骤共享 KV 缓存的读取，**长上下文下投机解码还能提升吞吐。**由于所有 token 都经过大模型校验，采样分布完全没有改变（非贪心时具体轨迹会不同，但分布不变）。
 
 传统上，投机解码需要一个与目标模型分布接近的小模型，比如 LLaMA-2 70B 配 LLaMA-2 2B——这种模型常常不存在。就算有，接受率低时草稿模型也还是太贵。于是另一种思路是把草稿头嵌进主模型里：比如给靠后的某一层加一个专门的草稿头<d-cite key="eagle"></d-cite><d-cite key="medusa"></d-cite><d-cite key="DeepSeek3"></d-cite>。这种草稿头和主模型共享大部分参数，跑起来更快，分布也更贴合。
 
