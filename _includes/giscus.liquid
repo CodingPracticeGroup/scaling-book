@@ -8,15 +8,9 @@
         'data-repo-id': '{{ site.giscus.repo_id }}',
         'data-category': '{{ site.giscus.category }}',
         'data-category-id': '{{ site.giscus.category_id }}',
-        {% if page.giscus_discussion %}
-        // Pin to a discussion number so lookup doesn't depend on GitHub's discussion
-        // search index, which has silently dropped this repo's discussions before.
-        'data-mapping': 'number',
-        'data-term': '{{ page.giscus_discussion }}',
-        {% else %}
+        {comment page.giscus_discussion 存的是上游 jax-ml/scaling-book 的讨论编号，本 fork 无对应编号的讨论，故不再按编号定位；统一改用站点配置的映射模式（title），各页首条评论会自动创建新讨论。 -%}
         'data-mapping': '{{ site.giscus.mapping }}',
         'data-strict': '{{ site.giscus.strict }}',
-        {% endif %}
         'data-reactions-enabled': '{{ site.giscus.reactions_enabled }}',
         'data-emit-metadata': '{{ site.giscus.emit_metadata }}',
         'data-input-position': '{{ site.giscus.input_position }}',
