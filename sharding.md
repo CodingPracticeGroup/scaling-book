@@ -1,8 +1,8 @@
 ---
 layout: distill
-title: "Sharded Matrices and How to Multiply Them"
+title: "分片的矩阵，以及怎么把它们相乘"
 # permalink: /main/
-description: "When we train large ML models, we have to split (or \"shard\") their parameters or inputs across many accelerators. Since LLMs are mostly made up of matrix multiplications, understanding this boils down to understanding how to multiply matrices when they're split across devices. We develop a simple theory of sharded matrix multiplication based on the cost of TPU communication primitives."
+description: "训练大型机器学习模型时，我们必须把模型的参数或输入分片（shard，也叫切分、划分）到许多加速器上。由于大模型几乎全由矩阵乘法组成，这件事最终就归结为一个问题：矩阵被拆散放在多台设备上时，还怎么把它们相乘？我们从 TPU 通信原语的开销出发，建立一套关于分片矩阵乘法的简单理论。"
 date: 2025-02-04
 future: true
 htmlwidgets: true
@@ -11,10 +11,10 @@ hidden: false
 section_number: 3
 
 previous_section_url: "../tpus"
-previous_section_name: "Part 2: TPUs"
+previous_section_name: "第 2 部分 · 如何理解 TPU"
 
 next_section_url: ../transformers
-next_section_name: "Part 4: Transformer Math"
+next_section_name: "第 4 部分 · Transformer 的数学"
 
 giscus_comments: true
 giscus_discussion: 5
@@ -50,23 +50,23 @@ authors:
 #     for hyperlinks within the post to work correctly.
 #   - please use this format rather than manually creating a markdown table of contents.
 toc:
-  - name: "Partitioning Notation and Collective Operations"
+  - name: "分片的记号与集合通信操作"
   - subsections:
-    - name: "A unified notation for sharding"
-    - name: "How do we describe this in code?"
-  - name: "Computation With Sharded Arrays"
+    - name: "一套统一的分片记号"
+    - name: "怎么用代码来描述这件事？"
+  - name: "用分片后的数组做计算"
   - subsections:
-    - name: "Case 1: neither multiplicand has a sharded contracting dimension"
-    - name: "Case 2: one multiplicand has a sharded contracting dimension"
-    - name: "Case 3: both multiplicands have sharded contracting dimensions"
-    - name: "Case 4: both multiplicands have a non-contracting dimension sharded along the same axis"
-  - name: "A Deeper Dive into TPU Communication Primitives"
+    - name: "情形 1：两个乘数的收缩维都没有被分片"
+    - name: "情形 2：有一个乘数的收缩维被分片了"
+    - name: "情形 3：两个乘数的收缩维都被分片了"
+    - name: "情形 4：两个乘数都有一个非收缩维沿同一条网格轴被分片"
+  - name: "更深入地看 TPU 的通信原语"
   - subsections:
-    - name: "Our final communication primitive: the AllToAll"
-    - name: "More about the ReduceScatter"
-    - name: "How to overlap matmul communication with compute"
-  - name: "What Have We Learned?"
-  - name: "Some Problems to Work"
+    - name: "最后一个通信原语：AllToAll"
+    - name: "再深入谈谈 ReduceScatter"
+    - name: "怎样让矩阵乘法的通信和计算重叠"
+  - name: "我们学到了什么？"
+  - name: "动手解题"
 
 # Below is an example of injecting additional post-specific styles.
 # This is used in the 'Layouts' section of this post.
@@ -88,77 +88,77 @@ _styles: >
   }
 ---
 
-## Partitioning Notation and Collective Operations
+## 分片的记号与集合通信操作
 
-When we train an LLM on ten thousand TPUs or GPUs, we're still doing abstractly the same computation as when we're training on one. The difference is that **our arrays don't fit in the HBM of a single TPU/GPU**, so we have to split them.<d-footnote>It's worth noting that we may also choose to parallelize for speed. Even if we could fit on a smaller number of chips, scaling to more simply gives us more FLOPs/s. During inference, for instance, we can sometimes fit on smaller topologies but choose to scale to larger ones in order to reduce latency. Likewise, during training we often scale to more chips to reduce the step time.</d-footnote> We call this "*sharding*" or "*partitioning*" our arrays. The art of scaling is figuring out how to shard our models so computation remains efficient.
+用一万块 TPU 或 GPU 训练大模型时，我们做的计算和只在一块芯片上训练时其实是同一回事。区别在于：**我们的数组塞不进任何一块 TPU/GPU 的 HBM**，所以只能把它们拆开。<d-footnote>值得说明的是，有时我们为了更快也会主动选择并行。哪怕模型在一小批芯片上就放得下，多拿一些芯片也能简单地换来更多 FLOPs/秒。比如推理时，我们有时明明能塞进更小的拓扑，却故意分到更大的拓扑上，好让延迟更低。同样，训练时也常常是多拿一些芯片，好把每一步的时间压短。</d-footnote>我们管这叫给数组做"*分片（sharding）*"或"*划分（partitioning）*"。扩大规模的"艺术"，就在于想清楚怎么分片，才能让计算一直保持高效。
 
-Here's an example 2D array **A** sharded across 4 TPUs:
+下面这个例子，是一个二维数组 **A** 被分片到了 4 块 TPU 上：
 
-{% include figure.liquid path="assets/img/sharding-example.png" class="img-fluid" caption="<b>Figure:</b> an example array of shape <b>A</b>[I, J] gets sharded across 4 devices. Both dimensions are evenly sharded across 2 devices with a sharding <b>A</b>[I<sub>X</sub>, J<sub>Y</sub>]. Each TPU holds 1/4 of the total memory." %}
+{% include figure.liquid path="assets/img/sharding-example.png" class="img-fluid" caption="<b>图：</b>一个形状为 <b>A</b>[I, J] 的数组被分片到 4 台设备上。两个维度都被对半分成两半、各放在 2 台设备上，分片方式记作 <b>A</b>[I<sub>X</sub>, J<sub>Y</sub>]。每块 TPU 只持有整个数组的 1/4。" %}
 
-Note how the sharded array still has the same *global* or *logical shape* as the unsharded array, say `(4, 128)`, but it also has a *device local shape*, like `(2, 64)`, which gives us the actual size in bytes that each TPU is holding (in the figure above, each TPU holds ¼ of the total array). Now we'll generalize this to arbitrary arrays.
+注意：分片后的数组仍然有一个*全局*的、也叫*逻辑*的形状，比如 `(4, 128)`，跟没分片时一模一样；但它同时还有一个*设备本地形状*，比如 `(2, 64)`，它告诉你每块 TPU 实际拿着多大的数据（上面这张图里，每块 TPU 持有整个数组的 ¼）。下面把它推广到任意数组。
 
-### A unified notation for sharding
+### 一套统一的分片记号
 
-We use a variant of *named-axis notation* to describe *how* the tensor is sharded in blocks across the devices: we assume the existence of a 2D or 3D grid of devices called the **device mesh** where each axis has been given **mesh axis names** **e.g. X**, **Y, and Z.** We can then specify how the matrix data is laid out across the device mesh by describing how each named dimension of the array is partitioned across the physical mesh axes. We call this assignment a **sharding**.
+我们用一种"*命名轴记号*"的变体来描述张量是怎么按块分到各设备上的：我们假设存在一个二维或三维的设备格子，叫**设备网格（device mesh）**，它的每条轴都有自己的**网格轴名**，**比如 X**、**Y 和 Z。** 只要说明数组的每个被命名的维度沿着哪条物理网格轴划分，就能描述矩阵数据在整个网格上的摆法。这个"哪个维度沿哪条网格轴分"的分配方案，就叫一个**分片（sharding）**。
 
-**Example (the diagram above)**: For the above diagram, we have:
-* **Mesh:** the device mesh above `Mesh(devices=((0, 1), (2, 3)), axis_names=('X', 'Y'))`, which tells us we have 4 TPUs in a 2x2 grid, with axis names $X$ and $Y$.
-* **Sharding:** $A[I_X, J_Y]$, which tells us to shard the first axis, $I$, along the mesh axis $X$, and the second axis, $J$, along the mesh axis $Y$. This sharding tells us that each shard holds $1 / (\lvert X\rvert \cdot \lvert Y\rvert)$ of the array.
+**例子（上面那张图）**：对上图来说，我们有：
+* **网格：** 设备网格为 `Mesh(devices=((0, 1), (2, 3)), axis_names=('X', 'Y'))`，意思是：有一台 2x2 格子排布的 4 块 TPU，两条轴分别叫 $X$ 和 $Y$。
+* **分片：** $A[I_X, J_Y]$，意思是：把第一个轴 $I$ 沿网格轴 $X$ 分片，把第二个轴 $J$ 沿网格轴 $Y$ 分片。这个分片告诉我们，每片只持有数组的 $1 / (\lvert X\rvert \cdot \lvert Y\rvert)$。
 
-Taken together, we know that the local shape of the array (the size of the shard that an individual device holds) is $(\lvert I\rvert / 2, \lvert J\rvert / 2)$, where $$\lvert I\rvert$$ is the size of A's first dimension and $$\lvert J\rvert$$ is the size of A's second dimension.
+把两者合起来，我们就知道数组的本地形状（单台设备持有的那片有多大）是 $(\lvert I\rvert / 2, \lvert J\rvert / 2)$，其中 $$\lvert I\rvert$$ 是 A 第一个维度的大小，$$\lvert J\rvert$$ 是 A 第二个维度的大小。
 
-<b markdown=1 style="color: #048affff;">Pop Quiz [2D sharding across 1 axis]:</b> Consider an array `fp32[1024, 4096]` with sharding $A[I_{XY}, J]$ and mesh `{'X': 8, 'Y': 2}`. How much data is held by each device? How much time would it take to load this array from HBM on H100s (assuming `3.4e12` memory bandwidth per chip)?
+<b markdown=1 style="color: #048affff;">小测验 [二维数据只沿一条轴分片]：</b> 有一个数组 `fp32[1024, 4096]`，分片方式 $A[I_{XY}, J]$，网格 `{'X': 8, 'Y': 2}`。每台设备持有多大的数据？在 H100 上把这整个数组从 HBM 读出来要多久（设每芯片内存带宽 `3.4e12`）？
 
-{% details Click here for the answer. %}
+{% details 点此查看答案。 %}
 
-$A[I_{XY}, J]$ shards the first dimension (I) along both the X and Y hardware axes. In this example, the local shape is $(\lvert I\rvert /(\lvert X\rvert \cdot \lvert Y\rvert), \lvert J\rvert)$. For the given example, the global shape is `fp32[1024, 4096]`, so the local shape is `fp32[64, 4096]`.
+$A[I_{XY}, J]$ 表示把第一个维度（I）沿 X 和 Y 两条硬件轴一起分片。这个例子里，本地形状就是 $(\lvert I\rvert /(\lvert X\rvert \cdot \lvert Y\rvert), \lvert J\rvert)$。代入题目数据，全局形状是 `fp32[1024, 4096]`，所以本地形状是 `fp32[64, 4096]`。
 
-Since each GPU has `4 * 64 * 4096 = 1MiB` bytes, this would take about `1e6 / 3.4e12 = 294ns`, although likely significantly more due to various overheads since this is so small.
+每台 GPU 上有 `4 * 64 * 4096 = 1MiB` 字节，读取大约需要 `1e6 / 3.4e12 = 294ns`——不过这么小的数据，各种固定开销会占大头，实际时间大概率会明显更长。
 
 {% enddetails %}
 
-**Visualizing these shardings:** Let's try to visualize these shardings by looking at a 2D array of data split over 4 devices:
+**把这些分片画出来：** 我们试着用一张"2 行 4 列"、分给 4 台设备的数据图来想象这些分片：
 
 {% include figure.liquid path="assets/img/sharding-colored1.png" class="img-fluid img-small" %}
 
-We write the *fully-replicated* form of the matrix simply as $A[I, J]$ with no sharding assignment. This means that *each* device contains a full copy of the entire matrix.
+**完全复制**（完全不分片）的形式就简单写成 $A[I, J]$，不带任何分片标记。意思是*每台*设备都存着整个矩阵的一份完整副本。
 
 {% include figure.liquid path="assets/img/sharding-colored2.png" class="img-fluid img-small" %}
 
-We can indicate that one of these dimensions has been partitioned across a mesh axis with a subscript mesh axis. For instance $A[I_X, J]$ would mean that the **I** logical axis has been partitioned across the **X** mesh dimension, but that the **J** dimension is *not* partitioned, and the blocks remain *partially-replicated* across the **Y** mesh axis.
+要说某条维度沿某条网格轴做了划分，就在下标上标出网格轴。比如 $A[I_X, J]$ 表示 **I** 这条逻辑轴沿 **X** 网格维做了划分，而 **J** 维*没有*被划分，数据块沿 **Y** 网格轴*部分复制*。
 
 {% include figure.liquid path="assets/img/sharding-colored3.png" class="img-fluid img-small" %}
 
-$A[I_X, J_Y]$ means that the **I** logical axis has been partitioned across the **X** mesh axis, and that the **J** dimension has been partitioned across the **Y** mesh axis.
+$A[I_X, J_Y]$ 表示 **I** 逻辑轴沿 **X** 网格轴划分、**J** 维沿 **Y** 网格轴划分。
 
 {% include figure.liquid path="assets/img/sharding-colored4.png" class="img-fluid img-small" %}
 
-We illustrate the other possibilities in the figure below:
+其余的可能性画在下面的图里：
 
 {% include figure.liquid path="assets/img/sharding-colored5.png" class="img-fluid" %}
 
-Here $A[I_{XY}, J]$ means that we treat the **X** and **Y** mesh axes as a larger flattened dimension and partition the **I** named axis across all the devices. The order of the multiple mesh-axis subscripts matters, as it specifies the traversal order of the partitioning across the grid.
+这里 $A[I_{XY}, J]$ 表示把 **X** 和 **Y** 两条网格轴看成一条更大的、拉平的维度，把 **I** 命名轴沿所有设备切开。多个网格轴下标的*顺序是有讲究的*：它规定了划分沿网格扫描的先后次序。
 
 {% include figure.liquid path="assets/img/sharding-colored6.png" class="img-fluid img-small" %}
 
-Lastly, note that we *cannot* have multiple named axes sharded along the *same* mesh dimension. e.g. $A[I_X, J_X]$ is a nonsensical, forbidden sharding. Once a mesh dimension has been used to shard one dimension of an array, it is in a sense "spent".
+最后请注意：*不能*把多条命名轴往*同一条*网格维上分片。比如 $A[I_X, J_X]$ 是不合法、被禁止的分片。一条网格维一旦用来给某个数组的某条维做分片，它就在某种意义上"用完"了。
 
-<b markdown=1 style="color: #57cf57;">Pop Quiz:</b> Let **A** be an array with shape `int8[128, 2048]`, sharding $A[I_{XY}, J]$, and mesh `Mesh({'X': 2, 'Y': 8, 'Z': 2})` (so 32 devices total). How much memory does **A** use per device? How much total memory does **A** use across all devices?
+<b markdown=1 style="color: #57cf57;">小测验：</b> 设 **A** 是一个形状为 `int8[128, 2048]` 的数组，分片方式 $A[I_{XY}, J]$，网格 `Mesh({'X': 2, 'Y': 8, 'Z': 2})`（共 32 台设备）。**A** 在每台设备上占多少内存？在所有设备上一共占多少内存？
 
-{% details Click here for the answer. %}
+{% details 点此查看答案。 %}
 
-**Answer:** Our array **A** is sharded over X and Y and replicated over Z, so per device it has shape `int8[128 / (2 * 8), 2048] = int8[8, 2048]`, with size `8 * 2048 = 16,384` bytes. Because it's replicated over Z, while within a Z-plane it's fully sharded over X and Y, there are 2 complete copies of the original array (one per Z-plane). So the total size across all devices is: original array size × Z replicas = 128 * 2048 * 2 = 512 KiB total. Alternatively, we can verify this as: 32 devices × 16,384 bytes per device = 512 KiB total.
+**答案：** 数组 **A** 沿 X 和 Y 分片、沿 Z 复制，所以每台设备上的形状是 `int8[128 / (2 * 8), 2048] = int8[8, 2048]`，大小 `8 * 2048 = 16,384` 字节。由于它沿 Z 复制，而在每个 Z 平面内部又沿 X、Y 彻底分片，所以整个数组一共有 2 份完整副本（每个 Z 平面一份）。因此所有设备加起来的大小是：原数组大小 × Z 向副本数 = 128 * 2048 * 2 = 共 512 KiB。另一种算法：32 台设备 × 每台 16,384 字节 = 共 512 KiB，能对上。
 
 {% enddetails %}
 
-### How do we describe this in code?
+### 怎么用代码来描述这件事？
 
-So far we've avoided talking about code, but now is a good chance for a sneak peek. JAX uses a named sharding syntax that very closely matches the abstract syntax we describe above. We'll talk more about this in [Section 10](../jax-stuff), but here's a quick preview. You can play with this in a Google Colab [here](https://colab.research.google.com/drive/15cxw66eABwZPG-V4QFmbLfiykPFf_gaP?usp=sharing) and profile the result to see how JAX handles different shardings. This snippet does 3 things:
+前面我们一直没碰代码，现在正好抢先看一眼。JAX 有一套命名式分片语法，和我们上面讲的抽象记号几乎一模一样。[第 10 部分](../jax-stuff)会细讲，这里先给个预告。你可以在这个 Google Colab [这里](https://colab.research.google.com/drive/15cxw66eABwZPG-V4QFmbLfiykPFf_gaP?usp=sharing)亲手玩一玩，并用性能分析工具看看 JAX 如何处理各种分片。这段代码做了 3 件事：
 
-1. Creates a **jax.Mesh** that maps our 8 TPUs into a 4x2 grid with names 'X' and 'Y' assigned to the two axes.
-2. Creates matrices A and B where A is sharded along both its dimensions and B is sharded along the output dimension.
-3. Compiles and performs a simple matrix multiplication that returns a sharded array.
+1. 建一个 **jax.Mesh**，把 8 块 TPU 组成一个 4x2 的网格，并给两条轴起名叫 'X' 和 'Y'。
+2. 建矩阵 A 和 B：A 沿两个维度都分片，B 沿输出维分片。
+3. 编译并执行一次简单的矩阵乘法，返回一个分片数组。
 
 ```py
 import jax
@@ -184,22 +184,22 @@ B = jnp.zeros((2048, 8192), dtype=jnp.bfloat16, device=P(None, 'Y'))
 y = jax.jit(lambda A, B: jnp.einsum('BD,DF->BF', A, B), out_shardings=P('X', 'Y'))(A, B)
 ```
 
-The cool thing about JAX is that these arrays behave as if they're unsharded! `B.shape` will tell us the global or logical shape (2048, 8192). We have to actually look at `B.addressable_shards` to see how it's locally sharded. We can perform operations on these arrays and JAX will attempt to figure out how to broadcast or reshape them to perform the operations. For instance, in the above example, the local shape of **A** is `[2, 1024]` and for **B** is `[2048, 4096]`. JAX/XLA will automatically add communication across these arrays as necessary to perform the final multiplication.
+JAX 妙就妙在：这些数组用起来就像没被分片过一样！`B.shape` 会告诉你全局的、逻辑上的形状 (2048, 8192)。你得专门去看 `B.addressable_shards`，才知道它本地是怎么切的。在这些数组上做运算，JAX 会自己想办法把它们广播或重排成能算的样子。比如上面这段例子里，**A** 的本地形状是 `[2, 1024]`，**B** 是 `[2048, 4096]`。为了完成最后的乘法，JAX/XLA 会自动在这些数组之间加上需要的通信。
 
-## Computation With Sharded Arrays
+## 用分片后的数组做计算
 
-If you have an array of data that's distributed across many devices and wish to perform mathematical operations on it, what are the overheads associated with sharding both the data and the computation?
+如果一份数据分布在许多台设备上，你想对它做数学运算，那么"数据和计算都被分片"会带来哪些额外开销？
 
-Obviously, this depends on the computation involved.
+这当然取决于要做什么计算。
 
-* For *elementwise* operations, there is **no overhead** for operating on a distributed array.
-* When we wish to perform operations across elements resident on many devices, things get complicated. Thankfully, for most machine learning nearly all computation takes place in the form of matrix multiplications, and they are relatively simple to analyze.
+* 对*逐元素*运算，在分布式数组上计算**没有任何额外开销**。
+* 当我们想做那种要跨越多台设备上元素的运算时，事情就复杂了。好在机器学习中几乎所有计算都是矩阵乘法，而它相对好分析。
 
-The rest of this section will deal with how to multiply sharded matrices. To a first approximation, this involves moving chunks of a matrix around so you can fully multiply or sum each chunk. **Each sharding will involve different communication.** For example, $A[I_X, J] \cdot B[J, K_Y] \to C[I_X, K_Y]$ can be multiplied without any communication because the *contracting dimension* (J, the one we're actually summing over) is unsharded. However, if we wanted the output unsharded (i.e. $A[I_X, J] \cdot B[J, K_Y] \to C[I, K]$), we would either need to copy $A$ and $B$ or $C$ to every device (using an *AllGather*). These two choices have different communication costs, so we need to calculate this cost and pick the lowest one.
+本节余下部分讲的就是怎么把分片后的矩阵相乘。粗略地说，就是把矩阵的一块块数据搬来搬去，好让每一块都能被完整地乘完或加完。**不同的分片方式对应不同的通信。** 比如 $A[I_X, J] \cdot B[J, K_Y] \to C[I_X, K_Y]$ 可以完全不通信就乘出来，因为*收缩维*（就是 J——矩阵乘法里真正要做求和、被"缩掉"的那一维）没有被分片。但如果我们想要输出不分片（即 $A[I_X, J] \cdot B[J, K_Y] \to C[I, K]$），就得把 $A$、$B$ 或 $C$ 中的某一方复制到每台设备上（用一次 *AllGather*）。这两种选择的通信代价不同，所以我们要把它们都算出来，挑最便宜的那个。
 
-{% details You can think of this in terms of "block matrix multiplication". %}
+{% details 你可以用"分块矩阵乘法"来理解这件事。 %}
 
-To understand this, it can be helpful to recall the concept of a "block matrix", or a nested matrix of matrices:
+要理解这一点，可以先回忆"*分块矩阵*"的概念——也就是"矩阵套矩阵"的嵌套矩阵：
 
 $$\begin{equation}
 \begin{pmatrix}
@@ -238,7 +238,7 @@ a_{32} & a_{33}
 \end{pmatrix}
 \end{equation}$$
 
-Matrix multiplication has the nice property that when the matrix multiplicands are written in terms of blocks, the product can be written in terms of block matmuls following the standard rule:
+矩阵乘法有一个很好的性质：当两个乘数都按分块写出来时，乘积可以按同样规则写成"分块的矩阵乘法"：
 
 $$\begin{equation}
 \begin{pmatrix}
@@ -257,27 +257,27 @@ A_{10}B_{00} + A_{11}B_{10} & A_{10}B_{01} + A_{11}B_{11}
 \end{pmatrix}
 \end{equation}$$
 
-What this means is that implementing distributed matrix multiplications reduces down to moving these sharded blocks over the network, performing *local* matrix multiplications on the blocks, and summing their results. **The question then is what communication to add, and how expensive it is.**
+这意味着：实现分布式矩阵乘法，就归结为把这些分片块通过网络搬来搬去、在块上做*本地*的矩阵乘法、再把结果加起来。**剩下的问题就是：需要加什么通信，它有多贵。**
 
 {% enddetails %}
 
-Conveniently, we can boil down all possible shardings into roughly 4 cases we need to consider, each of which has a rule for what communication we need to add
-1. **[Case 1](#case-1-neither-multiplicand-has-a-sharded-contracting-dimension):** neither input is sharded along the contracting dimension. _We can multiply local shards without any communication._
-2. **[Case 2](#case-2-one-multiplicand-has-a-sharded-contracting-dimension):** one input has a sharded contracting dimension. _We typically "AllGather" the sharded input along the contracting dimension._
-3. **[Case 3](#case-3-both-multiplicands-have-sharded-contracting-dimensions):** both inputs are sharded along the contracting dimension. _We can multiply the local shards, then "AllReduce" the result._
-4. **[Case 4](#case-4-both-multiplicands-have-a-non-contracting-dimension-sharded-along-the-same-axis):** both inputs have a non-contracting dimension sharded along the same axis. We cannot proceed without AllGathering one of the two inputs first.
+好在，所有可能的分片都能归成大约 4 种情形，每种情形都有一条对应"要加什么通信"的规则：
+1. **[情形 1](#case-1-neither-multiplicand-has-a-sharded-contracting-dimension)：** 两个输入沿收缩维都没有分片。_完全不用通信，本地直接乘。_
+2. **[情形 2](#case-2-one-multiplicand-has-a-sharded-contracting-dimension)：** 有一个输入沿收缩维分片了。_通常先沿收缩维对这个输入做一次 "AllGather"。_
+3. **[情形 3](#case-3-both-multiplicands-have-sharded-contracting-dimensions)：** 两个输入沿收缩维都被分片了。_本地先把分片乘起来，再对结果做一次 "AllReduce"。_
+4. **[情形 4](#case-4-both-multiplicands-have-a-non-contracting-dimension-sharded-along-the-same-axis)：** 两个输入都有一个非收缩维沿同一条网格轴被分片。不先把其中一个输入 AllGather 一下，就没法往下做。
 
-You can think of these as rules that simply need to be followed, but it's also valuable to understand why these rules hold and how expensive they are. We'll go through each one of these in detail now.
+你可以只把这几条当成"照做就行"的规则，但理解它们为什么成立、各自多贵，也很值得。下面逐个细讲。
 
-### Case 1: neither multiplicand has a sharded contracting dimension
+### 情形 1：两个乘数的收缩维都没有被分片 {#case-1-neither-multiplicand-has-a-sharded-contracting-dimension}
 
-**Lemma:** when multiplying sharded matrices, the computation is valid and the output follows the sharding of the inputs *unless* the contracting dimension is sharded or both matrices are sharded along the same axis. For example, this works fine
+**引理：** 给分片矩阵做乘法时，计算是合法的，输出会自动继承输入的分片——*除非*收缩维被分片了，或者两个矩阵沿同一条轴都分了片。比如下面这样完全没问题：
 
 $$\begin{equation*}
 \mathbf{A}[I_X, J] \cdot \mathbf{B}[J, K_Y] \rightarrow \mathbf{C}[I_X, K_Y]
 \end{equation*}$$
 
-with no communication whatsoever, and results in a tensor sharded across both the X and Y hardware dimensions. Try to think about why this is. Basically, the computation is *independent* of the sharding, since each batch entry has some local chunk of the axis being contracted that it can multiply and reduce. Any of these cases work fine and follow this rule:
+完全不需要任何通信，结果就是一个沿 X、Y 两条硬件维都分好片的张量。不妨自己想想为什么。说白了，计算和分片方式是*互不相干*的：每个批次样本手里都拿着"要被求和那一维"的一段本地数据，自己乘完自己加就行。下面这些组合全都成立、全都符合这条规则：
 
 $$\begin{align*}
 \mathbf{A}[I, J] \cdot \mathbf{B}[J, K] \rightarrow &\ \mathbf{C}[I, K] \\
@@ -286,216 +286,216 @@ $$\begin{align*}
 \mathbf{A}[I_X, J] \cdot \mathbf{B}[J, K_Y] \rightarrow &\ \mathbf{C}[I_X, K_Y]
 \end{align*}$$
 
-Because neither **A** nor **B** has a sharded contracting dimension **J**, we can simply perform the local block matrix multiplies of the inputs and the results will *already* be sharded according to the desired output shardings. When both multiplicands have non-contracting dimensions sharded along the same axis, this is no longer true (see the [invalid shardings](#case-4-both-multiplicands-have-a-non-contracting-dimension-sharded-along-the-same-axis) section for details).
+由于 **A** 和 **B** 的收缩维 **J** 都没被分片，我们只要把各个输入的分块在本地乘起来，结果*自然就已经*按照想要的输出分片摆好了。当两个乘数都有非收缩维沿同一条轴被分片时，这话就不再成立（详见[非法分片](#case-4-both-multiplicands-have-a-non-contracting-dimension-sharded-along-the-same-axis)一节）。
 
-### Case 2: one multiplicand has a sharded contracting dimension
+### 情形 2：有一个乘数的收缩维被分片了 {#case-2-one-multiplicand-has-a-sharded-contracting-dimension}
 
-Let's consider what to do when one input **A** is sharded along the contracting **J** dimension and **B** is fully replicated:
+看看输入 **A** 沿收缩维 **J** 被分片、而 **B** 完全复制时该怎么办：
 
 $$\mathbf{A}[I, J_X] \cdot \mathbf{B}[J, K] \rightarrow \mathbf{C}[I, K]$$
 
-We cannot simply multiply the local chunks of **A** and **B** because we need to sum over the full contracting dimension of **A**, which is split across the X axis. Typically, we first "**AllGather**" the shards of **A** so every device has a full copy, and only then multiply against **B:**
+我们不能拿 **A** 和 **B** 的本地块直接乘，因为必须对 **A** *完整的*收缩维求和，而它被拆散在 X 轴各台设备上。通常的做法是先对 **A** 的分片做一次 "**AllGather**"，让每台设备都拿到完整的一份，然后再和 **B** 相乘：
 
 $$\textbf{AllGather}_X[I, J_X] \rightarrow \mathbf{A}[I, J]$$
 
 $$\mathbf{A}[I, J] \cdot \mathbf{B}[J, K] \rightarrow \mathbf{C}[I, K]$$
 
-This way the actual multiplication can be done fully on each device.
+这样真正的乘法就能完全在每台设备本地完成了。
 
-<p markdown=1 class="takeaway">**Takeaway:** When multiplying matrices where one of the matrices is sharded along the contracting dimension, we generally AllGather it first so the contraction is no longer sharded, then do a local matmul.</p>
+<p markdown=1 class="takeaway">**要点：** 乘矩阵时，若其中一方的收缩维被分片了，一般先把它 AllGather 起来，让收缩维不再分片，然后在本地乘。</p>
 
-Note that when **B** is not also sharded along X, we could also do the local partial matmul and then sum (or *AllReduce*) the sharded partial sums, which lets us shard the compute but usually has a higher communication cost. This can be faster in some cases, although it's usually true in practice that **B** will be sharded. Question 4 [below](#some-problems-to-work) works through when this is better.
+注意，若 **B** 没有沿 X 分片，我们也可以先在本地乘出"部分和"，再把这些部分和加起来（即 *AllReduce*）。这样计算也能分到各设备上，只是通信通常更贵。某些情况下这样反而更快，不过现实中 **B** 往往也是分过片的，所以一般不这么干。下面[第 4 题](#some-problems-to-work)会算清楚什么时候这样更划算。
 
-**What is an AllGather?** An AllGather is the first core [MPI](https://en.wikipedia.org/wiki/Message_Passing_Interface) communication primitive we will discuss. An AllGather *removes the sharding* along an axis and reassembles the shards spread across devices onto *each* device along that axis. Using the notation above, an AllGather removes a subscript from a set of axes, e.g.
+**什么是 AllGather？** AllGather 是我们要讲的第一个核心 [MPI](https://en.wikipedia.org/wiki/Message_Passing_Interface) 通信原语。AllGather 会*消除*某条轴上的分片：沿那条轴散落在各设备上的分片，会被拼回完整的一份，放到这条轴上的*每台*设备上。用我们的记号，AllGather 就是"把下标擦掉"，例如：
 
 $$\textbf{AllGather}_{XY}(A[I_{XY}, J]) \rightarrow A[I, J]$$
 
-We don't have to remove all subscripts for a given dimension, e.g. $$A[I_{XY}, J] \rightarrow A[I_Y, J]$$ is also an AllGather, just over only a single axis. Also note that we may also wish to use an AllGather to remove *non-contracting* dimension sharding, for instance in the matrix multiply:
+不必把一条维的所有下标一次全擦掉，例如 $$A[I_{XY}, J] \rightarrow A[I_Y, J]$$ 也是 AllGather，只是只沿一条轴做。另外还要注意：AllGather 也可以用来消除*非收缩维*的分片。比如矩阵乘法：
 
 $$A[I_X, J] \cdot B[J, K] \rightarrow C[I, K]$$
 
-We could either AllGather **A** initially to remove the input sharding, or we can do the sharded matmul and then AllGather the result **C**.
+我们可以一开始就把 **A** AllGather 起来、消掉输入的分片；也可以先按分片乘完，再对结果 **C** 做 AllGather。
 
-**How is an AllGather actually performed?** To perform a 1-dimensional AllGather around a single TPU axis (a ring), we basically have each TPU pass its shard around a ring until every device has a copy.<d-footnote>A GPU AllGather can also work like this, where you create a ring out of the GPUs in a node and pass the chunks around in that (arbitrary) order.</d-footnote> Here is an animation:
+**AllGather 具体怎么做？** 在一条 TPU 轴（一个环）上做一维 AllGather，基本上就是让每台 TPU 把自己那片沿环接力传递，直到每台设备都拿到完整一份。<d-footnote>GPU 上的 AllGather 也能这样工作：把一台机器里的 GPU 连成一个环，按（任意的）顺序沿环传递数据块。</d-footnote> 看这段动画：
 
-{% include figure.liquid path="assets/img/all-gather.gif" caption="<b>Figure:</b> An animation showing how to perform an AllGather around a set of 8 TPU or GPU devices. Each device starts with 1 / 8th of the array and ends up with a full copy." %}
+{% include figure.liquid path="assets/img/all-gather.gif" caption="<b>图：</b>一段动画，展示如何在 8 台 TPU 或 GPU 设备上做一次 AllGather。每台设备起初只有数组的 1/8，结束时每台都拿到完整一份。" %}
 
-We can either do an AllGather in one direction or both directions (two directions are shown above). If we do one direction, each TPU sends chunks of size $\text{bytes} / N$ over $N - 1$ hops around the ring. If we do two directions, we have $\lfloor \frac{N}{2} \rfloor$ hops of size $2 \cdot \text{bytes} / N$.
+AllGather 可以沿单向做，也可以双向同时做（上面演示的是双向）。单向做时，每台 TPU 沿环传 $N-1$ 跳，每跳传 $\text{bytes} / N$ 大小的块。双向做时，只需 $\lfloor \frac{N}{2} \rfloor$ 跳，每跳每个方向传 $\text{bytes} / N$。
 
-**How long does this take?** Let's take the bidirectional AllGather and calculate how long it takes. Let $$V$$ be the number of bytes in the array, and $X$ be the number of shards on the contracting dimension. Then from the above diagram, each hop sends $V / \lvert X\rvert$ bytes in each direction, so each hop takes
+**这要花多久？** 我们来算双向 AllGather 的耗时。设 $$V$$ 是数组的字节数，$X$ 是收缩维上的分片数。按上面的图，每一跳在两个方向各传 $V / \lvert X\rvert$ 字节，所以每跳耗时
 
 $$T_{hop} = \frac{2 \cdot V}{\lvert X \rvert \cdot W_\text{ici}}$$
 
-where $W_\text{ici}$ is the **bidirectional** ICI bandwidth.<d-footnote>The factor of 2 in the numerator comes from the fact that we're using the bidirectional bandwidth. We send $V / X$ in each direction, or $2V / X$ total.</d-footnote> We need to send a total of $\lvert X\rvert / 2$ hops to reach every TPU<d-footnote>technically, $\lfloor X / 2 \rfloor$</d-footnote>, so the total reduction takes
+其中 $W_\text{ici}$ 是**双向** ICI 带宽。<d-footnote>分子上那个 2，是因为我们用的是双向带宽：两个方向各传 $V / X$，合计 $2V / X$。</d-footnote> 要覆盖所有 TPU 总共需要传 $\lvert X\rvert / 2$ 跳<d-footnote>严格说是 $\lfloor X / 2 \rfloor$</d-footnote>，所以整个过程总耗时
 
 $$T_{total} = \frac{2 \cdot V \cdot X}{2 \cdot X \cdot W_\text{ici}}$$
 
 $$T_{total} = \frac{V}{W_\text{ici}}$$
 
-Note that this **doesn't depend on $X$!** That's kind of striking, because it means even though our TPUs are only locally connected, the locality of the connections doesn't matter. We're just bottlenecked by the speed of each link.
+注意这**和 $X$ 无关！** 这挺惊人——它意味着虽然我们的 TPU 只是"就近相连"的，但这种就近连接并不影响速度，瓶颈只在每条链路本身的快慢。
 
-<p markdown=1 class="takeaway">**Takeaway:** when performing an AllGather (or a ReduceScatter or AllReduce) in a throughput-bound regime, the actual communication time depends only on the size of the array and the available bandwidth, not the number of devices over which our array is sharded!</p>
+<p markdown=1 class="takeaway">**要点：** 在"带宽受限"的区间里做 AllGather（或 ReduceScatter、AllReduce），实际通信时间只取决于数组大小和可用带宽，跟数组被分到了多少台设备上无关！</p>
 
-**A note on ICI latency:** Each hop over an ICI link has some intrinsic overhead regardless of the data volume. This is typically around 1us. This means when our array $$A$$ is very small and each hop takes less than 1us, we can enter a "latency-bound" regime where the calculation _does_ depend on $X$.
+**关于 ICI 延迟的说明：** 每跳 ICI 链路都有一点"起步开销"，跟传多少数据无关，通常约 1us。所以当数组 $$A$$ 非常小、每跳数据本来用不了 1us 时，就会进入"延迟受限"区间，这时计算结果*会*跟 $X$ 有关。
 
-{% details For the full details, click here. %}
+{% details 完整推导点此展开。 %}
 
-Let $$T_\text{min}$$ be the minimum time for a single hop. Then
+设 $$T_\text{min}$$ 是单跳的最小耗时。那么
 
 $$T_{hop} = \max \left[ T_{min}, \frac{2 \cdot V}{X \cdot W_\text{ici}} \right]$$
 
 $$T_{total} = \max \left[ \frac{T_{min} \cdot X}{2}, \frac{V}{W_\text{ici}} \right]$$
 
-since we perform $X / 2$ hops. For large reductions or gathers, we're solidly bandwidth bound. We're sending so much data that the overhead of each hop is essentially negligible. But for small arrays (e.g. when sampling from a model), this isn't negligible, and the ICI bandwidth isn't relevant. We're bound purely by latency. Another way to put this is that given a particular TPU, e.g. TPU v5e with `4.5e10` unidirectional ICI bandwidth, sending any buffer under `4.5e10 * 1e-6 = 45kB` will be latency bound.
+因为我们要走 $X / 2$ 跳。对大的归约或收集操作，我们稳稳处于带宽受限区间：数据多到每跳的固定开销几乎可以忽略。但对很小的数组（比如模型采样时），这笔开销不能忽略，ICI 带宽帮不上忙——我们就纯被延迟卡着。换个说法：拿一块具体的 TPU，比如 TPU v5e，单向 ICI 带宽 `4.5e10`，那么任何小于 `4.5e10 * 1e-6 = 45kB` 的缓冲区都会是延迟受限的。
 
 {% enddetails %}
 
-Here is an empirical measurement of AllGather bandwidth on a TPU v5e 8x16 slice. The array is sharded across the 16 axis so it has a full bidirectional ring.
+下面是在一块 TPU v5e 8x16 切片上实测的 AllGather 带宽。数组沿长度为 16 的那条轴分片，所以有一个完整的双向环。
 
-{% include figure.liquid path="assets/img/all-gather-bandwidth.png" class="img-small" caption="<b>Figure:</b> empirical bandwidth and estimated link bandwidth for TPU v5e during an AllGather. BW in orange is the actual bytes per second AllGathered, while the blue curve shows the empirical unidirectional link bandwidth calculated according to the known cost of the collective." %}
+{% include figure.liquid path="assets/img/all-gather-bandwidth.png" class="img-small" caption="<b>图：</b>TPU v5e 做 AllGather 时的实测带宽与推算链路带宽。橙色是按秒实际收集到的字节数；蓝色是按该集合通信的已知开销算出的实测单向链路带宽。" %}
 
-Note that we not only achieve about 95% of the peak claimed bandwidth (`4.5e10`) but also that we achieve this peak at about 10MB, which when 16-way sharded gives us about 625kB per device (*aside*: this is much better than GPUs).
+注意我们不但达到了标称峰值带宽（`4.5e10`）的约 95%，而且在约 10MB 处就到顶了——按 16 路分片摊，每设备才 625kB（*旁注*：这比 GPU 好得多）。
 
-**What happens when we AllGather over multiple axes?** When we gather over multiple axes, we have multiple dimensions of ICI over which to perform the gather. For instance, AllGather<sub>XY</sub>([B, D<sub>XY</sub>]) operates over two hardware mesh axes. This increases the available bandwidth by a factor of $N_\text{axes}$.
+**沿多条轴同时 AllGather 会怎样？** 沿多条轴收集时，我们就多出了几个可以做收集的 ICI 维度。比如 AllGather<sub>XY</sub>([B, D<sub>XY</sub>]) 同时利用两条硬件网格轴。可用带宽因此变成原来的 $N_\text{axes}$ 倍。
 
-When considering latency, we end up with the general rule:
+算上延迟因素，通用规则是：
 
 $$T_{total} = \max \left[ \frac{T_{min} \cdot \sum_{i} |X_i|}{2}, \frac{V}{W_\text{ici} \cdot N_\text{axes}} \right]$$
 
-where $$\sum_i \lvert X_i \rvert / 2$$ is the length of the longest path in the TPU mesh.
+其中 $$\sum_i \lvert X_i \rvert / 2$$ 是 TPU 网格中最长路径的长度。
 
-<b markdown=1 style="color:rgb(144, 92, 255);">Pop Quiz 2 [AllGather time]:</b> Using the numbers from [Part 2](../tpus), how long does it take to perform the AllGather<sub>Y</sub>([E<sub>Y</sub>, F]) → [E, F] on a TPU v5e with a 2D mesh `{'X': 8, 'Y': 4}`, $$E = 2048$$, $$F = 8192$$ in bfloat16? What about with $$E=256, F=256$$?
+<b markdown=1 style="color:rgb(144, 92, 255);">小测验 2 [AllGather 的时间]：</b> 用[第 2 部分](../tpus)里的数字，在 TPU v5e、二维网格 `{'X': 8, 'Y': 4}` 上做 AllGather<sub>Y</sub>([E<sub>Y</sub>, F]) → [E, F] 要多久？设 $$E = 2048$$、$$F = 8192$$，bfloat16。换成 $$E=256, F=256$$ 呢？
 
-{% details Click here for the answer. %}
+{% details 点此查看答案。 %}
 
-**Answer:** Let's start by calculating some basic quantities:
+**答案：** 先算几个基本量：
 
-1) TPU v5e has 4.5e10 bytes/s of unidirectional ICI bandwidth for each of its 2 axes.
-2) In bfloat16 for (a), we have $A[E_Y, F]$ so each device holds an array of shape bf16[512, 8192] which has 512 * 8192 * 2 = 8.4MB. The total array has size 2048 * 8192 * 2 = 34MB.
+1) TPU v5e 每条轴有 4.5e10 字节/秒的单向 ICI 带宽，共两条轴。
+2) bfloat16 下情形 (a)：$A[E_Y, F]$，每台设备持有 bf16[512, 8192]，即 512 * 8192 * 2 = 8.4MB。整个数组的大小是 2048 * 8192 * 2 = 34MB。
 
-*For part (1)*, we can use the formula above. Since we're performing the AllGather over one axis, we have $T_{\text{comms}} = \text{34e6} / \text{9e10} = \text{377us}$. To check that we're not latency-bound, we know over an axis of size 4, we'll have at most 3 hops, so our latency bound is something like 3us, so we're not close. However, TPU v5e only has a wraparound connection when one axis has size 16, so here *we actually can't do a fully bidirectional AllGather*. We have to do 3 hops for data from the edges to reach the other edge, so in theory we have more like $T_{\text{comms}} = 3 * \text{8.4e6} / \text{4.5e10} = 560\mu s$. [**Here's**](https://imgur.com/a/RkvpRGQ) **an actual profile** from [this Colab](https://colab.research.google.com/drive/15tDZMfNqm2vJjvSzw5VC9qtSwc5td-oV?usp=sharing), which shows $680 \mu s$, which is reasonable since we're likely not getting 100% of the theoretical bandwidth! *For part (2)* each shard has size `64 * 256 * 2 = 32kB. 32e3 / 4.5e10 = 0.7us`, so we're latency bound. Since we have 3 hops, this will take roughly 3 * 1us = 3us. [In practice, it's closer to 8us.](https://imgur.com/a/HZLQmYs)
+*第 (1) 问*，直接套上面的公式。因为只沿一条轴收集，$T_{\text{comms}} = \text{34e6} / \text{9e10} = \text{377us}$。检查是否延迟受限：沿一条大小为 4 的轴最多 3 跳，延迟下限约 3us，差得远，不是延迟受限。不过 TPU v5e 只有当某条轴长为 16 时才有绕回链路，所以*这里其实做不了真正的双向 AllGather*。数据从边缘要传 3 跳才能到达另一端，所以理论值更接近 $T_{\text{comms}} = 3 * \text{8.4e6} / \text{4.5e10} = 560\mu s$。[**这里**](https://imgur.com/a/RkvpRGQ)**有一份真实的性能分析**（来自 [这个 Colab](https://colab.research.google.com/drive/15tDZMfNqm2vJjvSzw5VC9qtSwc5td-oV?usp=sharing)），显示 $680 \mu s$——很合理，因为我们拿不到 100% 的理论带宽！*第 (2) 问*：每个分片 `64 * 256 * 2 = 32kB`。`32e3 / 4.5e10 = 0.7us`，所以是延迟受限。共 3 跳，大约 3 * 1us = 3us。[实测接近 8us。](https://imgur.com/a/HZLQmYs)
 
 {% enddetails %}
 
-<p markdown=1 class="takeaway">**Note:** when we have a 2D mesh like `{'X': 16, 'Y': 4}`, it is not necessary for each axis to correspond to a specific _hardware_ axis. This means for instance the above could describe a 4x4x4 TPU v5p cube with 2 axes on the $X$ axis. This will come into play later when we describe data parallelism over multiple axes.</p>
+<p markdown=1 class="takeaway">**注意：** 对于 `{'X': 16, 'Y': 4}` 这样的二维网格，网格轴并不要求一一对应某条具体的*硬件*轴。比如它也可以描述一个 4x4x4 的 TPU v5p 立方体、其中两条轴都挂在 $X$ 名下。后文讲"跨多轴的数据并行"时会用到这一点。</p>
 
-### Case 3: both multiplicands have sharded contracting dimensions
+### 情形 3：两个乘数的收缩维都被分片了 {#case-3-both-multiplicands-have-sharded-contracting-dimensions}
 
-The third fundamental case is when both multiplicands are sharded on their contracting dimensions, along the same mesh axis:
+第三种基本情形：两个乘数沿收缩维、且沿同一条网格轴都被分片了：
 
 $$\textbf{A}[I, J_X] \cdot \textbf{B}[J_X, K] \rightarrow C[I, K]$$
 
-In this case the *local* sharded block matrix multiplies are at least *possible* to perform, since they will share the same sets of contracting indices. But each product will only represent a *partial sum* of the full desired product, and each device along the **X** dimension will be left with different *partial sums* of this final desired product.  This is so common that we extend our notation to explicitly mark this condition:
+这时*本地*的分块矩阵乘法至少在"能做"上是没问题的——两边用的收缩下标是同一段。但每台设备乘出来的只是完整结果的一个*部分和*，沿 **X** 维的每台设备拿到的部分还各不相同。这种情形太常见了，我们专门扩展记号来标记它：
 
 $$\textbf{A}[I, J_X] \cdot_\text{LOCAL} \textbf{B}[J_X, K] \rightarrow C[I, K] \{\ U_X \}$$
 
-The notation **{ U<sub>X</sub> }** reads "**unreduced** along X mesh axis" and refers to this status of the operation being "incomplete" in a sense, in that it will only be finished pending a final sum. The $\cdot_\text{LOCAL}$ syntax means we perform the local sum but leave the result unreduced.
+记号 **{ U<sub>X</sub> }** 读作"沿 X 网格轴*未归约*"，意思是这个运算在某种意义上"没做完"：就差最后加总一下。$\cdot_\text{LOCAL}$ 表示"做本地那份乘加，但结果先不归约"。
 
-This can be seen as the following result about matrix multiplications and outer products:
+这背后的事实，其实是矩阵乘法与外积的关系：
 
 $$A \cdot B = \sum_{i=1}^{P} \underbrace{A_{:,i} \otimes B_{i,:}}_{\in \mathbb{R}^{n \times m}}$$
 
-where ⊗ is the outer product. Thus, if TPU **i** on axis **X** has the **i**th column of **A**, and the **i**th row of **B**, we can do a local matrix multiplication to obtain $$A_{:,i} \otimes B_{i,:} \in \mathbb{R}_{n\times m}$$. This matrix has, in each entry, the **i**th term of the sum that **A • B** has at that entry. We still need to perform that sum over **P**, which we sharded over mesh axis **X**, to obtain the full **A • B**. This works the same way if we write **A** and **B** by blocks (i.e. shards), and then sum over each resulting shard of the result.
+其中 ⊗ 是外积。这样，如果 **X** 轴上的第 **i** 块 TPU 存着 **A** 的第 **i** 列和 **B** 的第 **i** 行，它就能本地算出 $$A_{:,i} \otimes B_{i,:} \in \mathbb{R}_{n\times m}$$。这个矩阵的每个元素，恰好是 **A • B** 对应元素求和式里的第 **i** 项。我们还差把沿网格轴 **X** 拆开的那个、对 **P** 的求和补上，才能得到完整的 **A • B**。把 **A**、**B** 按块（也就是按分片）写、再对结果的每一块求和，道理完全一样。
 
-We can perform this summation using a full **AllReduce** across the **X** axis to remedy this:
+用一次沿 **X** 轴的完整 **AllReduce** 就能完成这个求和：
 
 $$\begin{align*}
 A[I, J_X] \cdot_\text{LOCAL} B[J_X, K] \rightarrow &\ C[I, K] \{ U_X \} \\
 \textbf{AllReduce}_X C[I, K] \{ U_X \} \rightarrow &\ C[I, K]
 \end{align*}$$
 
-AllReduce removes partial sums, resulting in *each* device along the axis having the same fully-summed value. AllReduce is the second of several key communications we'll discuss in this section, the first being the AllGather, and the others being ReduceScatter and AllToAll. An AllReduce takes an array with an unreduced (partially summed) axis and performs the sum by passing those shards around the unreduced axis and accumulating the result. The signature is
+AllReduce 消掉"未归约"状态，让沿那条轴的*每台*设备都拿到完全加好的同一个值。AllReduce 是本节要讲的第二个关键通信原语（第一个是 AllGather，后面还有 ReduceScatter 和 AllToAll）。AllReduce 接收一个带有未归约（部分和）轴的数组，把各分片沿那条轴传着累加，完成求和。它的签名是
 
 $$\textbf{AllReduce}_Y A[I_X, J] \{U_Y\} \rightarrow A[I_X, J]$$
 
-This means it simply removes the $\\{U_Y\\}$ suffix but otherwise leaves the result unchanged.
+也就是它只是去掉 $\{U_Y\}$ 这个后缀，别的一概不变。
 
-**How expensive is an AllReduce?** One mental model for how an AllReduce is performed is that every device sends its shard to its neighbors, and sums up all the shards that it receives. Clearly, this is more expensive than an AllGather because each "shard" has the same shape as the full array. Generally, **an AllReduce is twice as expensive as an AllGather.** One way to see this is to note that an **AllReduce** can be expressed as a composition of two other primitives: a **ReduceScatter** and an **AllGather**. Like an AllReduce, a ReduceScatter resolves partial sums on an array but results in an output 'scattered' or partitioned along a given dimension. AllGather collects all those pieces and 'unpartitions/unshards/replicates' the logical axis along that physical axis.
+**AllReduce 有多贵？** 可以这样想象它的工作方式：每台设备把自己这份发给邻居，把收到的所有份加在一起。显然它比 AllGather 更贵，因为每个"分片"都有整个数组那么大。一般说，**AllReduce 的代价是 AllGather 的两倍。** 有一种看法很直观：**AllReduce** 可以由两个别的原语拼成：一次 **ReduceScatter** 加一次 **AllGather**。和 AllReduce 一样，ReduceScatter 也能消掉部分和，但输出是沿某条维"散开"（分片）的状态。AllGather 再把这些碎片收集起来，"取消分片/复制成完整"的那条逻辑轴。
 
 $$\begin{align*}
 \textbf{ReduceScatter}_{Y,J} : A[I_X,J] \{U_Y\} \rightarrow &\ A[I_X, J_Y] \\
 \textbf{AllGather}_Y : A[I_X, J_Y] \rightarrow &\ A[I_X, J]
 \end{align*}$$
 
-**What about a ReduceScatter?** Just as the AllGather reassembles a sharded array (removing a subscript), a ReduceScatter sums an unreduced/partially summed array and then scatters (shards) a different logical axis along the same mesh axis. $X[F]\\{U_Y\\} \to X[F_Y]$. The animation shows how this is done: note that it's very similar to an AllGather but instead of retaining each shard, we sum them together. Thus, its latency is roughly the same, excluding the time taken to perform the reduction.
+**ReduceScatter 又是什么？** 就像 AllGather 是把分好片的数组拼回来（擦掉下标），ReduceScatter 是把"未归约/部分和"数组加起来，然后沿*同一条网格轴*把另一条逻辑轴散开（分片）：$X[F]\\{U_Y\\} \to X[F_Y]$。动画演示了过程：注意它和 AllGather 非常像，区别是每台设备不保留收到的每份数据，而是把它们加在一起。所以它的延迟和 AllGather 差不多（再加一点点做加法的时间）。
 
 {% include figure.liquid path="assets/img/reduce-scatter.gif" class="img-fluid" %}
 
-The communication time for each hop is simply the per-shard bytes $V / Y$ divided by the bandwidth $W_\text{ici}$, as it was for an AllGather, so we have
+每跳的通信时间就是每片的字节数 $V / Y$ 除以带宽 $W_\text{ici}$，和 AllGather 一样，所以有
 
 $$T_{\text{comms per AllGather or ReduceScatter}} = \frac{V}{W_\text{ici}}$$
 
 $$T_{\text{comms per AllReduce}} = 2 \cdot \frac{V}{W_\text{ici}}$$
 
-where $$W_\text{ici}$$ is the bidirectional bandwidth, so long as we have a full ring to reduce over.
+其中 $$W_\text{ici}$$ 是双向带宽，前提是有一条完整的归约环。
 
-### Case 4: both multiplicands have a non-contracting dimension sharded along the same axis
+### 情形 4：两个乘数都有一个非收缩维沿同一条网格轴被分片 {#case-4-both-multiplicands-have-a-non-contracting-dimension-sharded-along-the-same-axis}
 
-Each mesh dimension can appear at most once when sharding a tensor. Performing the above rules can sometimes lead to a situation where this rule is violated, such as:
+给一个张量分片时，每条网格维最多只能出现一次。按上面的规则做，有时会撞上违反这条规则的情形，比如：
 
 $$A[I_X, J] \cdot B[J, K_X] \rightarrow C[I_X, K_X]$$
 
-This is invalid because a given shard, say **i**, along dimension **X**, would have the **(i, i)**th shard of **C**, that is, a diagonal entry. There is not enough information among all shards, then, to recover anything but the diagonal entries of the result, so we cannot allow this sharding.
+这不合规则因为：沿 **X** 的第 **i** 片如果直接乘，只能算出 **C** 的第 **(i, i)** 块——一个对角块。光靠这些分片，除了对角线上的块，其他什么都拼不出来，所以这样的分片不被允许。
 
-The way to resolve this is to AllGather some of the dimensions. Here we have two choices:
+解决的办法是把其中一些维 AllGather 掉。这里有两个选择：
 
 $$\begin{align*}
 \textbf{AllGather}_X A[I_X, J] \rightarrow &\ A[I, J] \\
 A[I, J] \cdot B[J, K_X] \rightarrow &\ C[I, K_X]
 \end{align*}$$
 
-or
+或者
 
 $$\begin{align*}
 \textbf{AllGather}_X B[J, K_X] \rightarrow &\ B[J, K] \\
 A[I_X, J] \cdot B[J, K] \rightarrow &\ C[I_X, K]
 \end{align*}$$
 
-In either case, the result will only mention **X** once in its shape. Which one we pick will be based on what sharding the following operations need.
+无论哪种，结果里 **X** 都只会出现一次。选哪种，取决于后面的运算想要什么样的分片。
 
-## A Deeper Dive into TPU Communication Primitives
+## 更深入地看 TPU 的通信原语
 
-The previous 4 cases have introduced several "core communication primitives" used to perform sharded matrix multiplications:
+前面 4 种情形已经引出了几个做分片矩阵乘法要用到的"核心通信原语"：
 
-1. **AllGather:** removes a subscript from a sharding, gathering the shards.
-2. **ReduceScatter:** removes an "un-reduced" suffix from an array by summing shards over that axis, leaving the array sharded over a second axis.
-3. **AllReduce:** removes an "un-reduced" suffix, leaving the array unsharded along that axis.
+1. **AllGather：** 擦掉分片记号里的一个下标，把分片收集成完整一份。
+2. **ReduceScatter：** 消掉"未归约"后缀——沿那条轴把各份加起来，让数组转而沿另一条维分片。
+3. **AllReduce：** 消掉"未归约"后缀，让数组在那条轴上恢复完整。
 
-There's one more core communication primitive to mention that arises in the case of Mixture of Experts (MoE) models and other computations: the **AllToAll**.
+还有一个核心通信原语要讲，它出现在混合专家（MoE）等模型的计算里：**AllToAll**。
 
-### Our final communication primitive: the AllToAll
+### 最后一个通信原语：AllToAll
 
-A final fundamental collective which does not occur naturally when considering sharded matrix multiplies, but which comes up constantly in practice, is the **AllToAll** collective, or more precisely the special case of a *sharded transposition* or resharding operation. e.g.
+最后这个基本集合通信，在分片矩阵乘法里不会自然出现，但在实践中频繁遇到：**AllToAll** 集合通信，更准确说是它的特例——*分片转置*（resharding，重新分片）操作。例如：
 
 $$\textbf{AllToAll}_{X, J} A[I_X, J] \rightarrow A[I, J_X]$$
 
-AllToAlls are typically required to rearrange sharded layouts between different regions of a sharded computation that don't have compatible layout schemes. They arise naturally when considering sharded mixture-of-experts models. *You can think of an AllToAll as moving a subscript from one axis to another*. Because an all to all doesn't need to replicate all of the data of each shard across the ring, it's actually *cheaper* than an AllGather (by a factor of ¼)<d-footnote>For even-sized bidirectional rings, each device will send $(N/2 + (N/2-1) + … + 1)$ chunks right and $((N/2-1) + … + 1)$ chunks left $= 0.5 \cdot (N / 2) \cdot (N/2 + 1) + 0.5 \cdot (N / 2) \cdot (N/2 - 1) = N^2/4$. The size of each chunk (aka shard of a shard) is $\text{bytes} / N^2$ so the per-device cost is $(\text{bytes} / N^2) \cdot N^2 / 4 = \text{bytes} / 4$. This result scales across all devices as the total bandwidth scales with device number.</d-footnote>.
+当一段分片计算的相邻区域用了互不兼容的排布方案时，就需要 AllToAll 来重排分片布局。它在分片的混合专家模型里很自然地出现。*你可以把 AllToAll 理解为"把一个下标从一条轴挪到另一条轴"*。由于 AllToAll 不需要把每个分片的完整数据沿环复制，它实际上比 AllGather *更便宜*（只有 ¼ 的代价）<d-footnote>对偶数大小的双向环，每台设备向右发 $(N/2 + (N/2-1) + … + 1)$ 块、向左发 $((N/2-1) + … + 1)$ 块 $= 0.5 \cdot (N / 2) \cdot (N/2 + 1) + 0.5 \cdot (N / 2) \cdot (N/2 - 1) = N^2/4$。每块（即"分片的分片"）的大小是 $\text{bytes} / N^2$，所以每台设备的代价是 $(\text{bytes} / N^2) \cdot N^2 / 4 = \text{bytes} / 4$。所有设备合起来的总量随设备数的增加方式，与总带宽随设备数的增加方式一致。</d-footnote>。
 
 {% include figure.liquid path="assets/img/all-to-all.gif" class="img-fluid" %}
 
-If we generalize to an ND AllToAll, the overall cost for an array of $V$ total bytes (summed across all devices) on an AxBxC mesh is
+推广到 N 维，在 AxBxC 网格上，对一个总共 $V$ 字节（所有设备加在一起）的数组做一次 AllToAll，总代价是
 
 $$T_\text{comms per AllToAll} = \frac{V \cdot \max(A, B, C, ...)}{4 \cdot N \cdot W_\text{ici}}$$
 
-where as usual $W_\text{ici}$ is the bidirectional ICI bandwidth and $N = A \cdot B \cdot C \cdot \ldots$ is the total number of devices. Equivalently, in terms of the per-device bytes $V / N$, the cost is $(V / N) \cdot \max(A, B, C, ...) / (4 \cdot W_\text{ici})$. For a 1D mesh, this reduces to $V / (4 \cdot W_\text{ici})$, which is 1 / 4 the cost of an AllGather. In 2D, the cost actually scales down with the size of the smallest axis.
+照例，$W_\text{ici}$ 是双向 ICI 带宽，$N = A \cdot B \cdot C \cdot \ldots$ 是设备总数。等价地，用每设备字节数 $V / N$ 表示，代价是 $(V / N) \cdot \max(A, B, C, ...) / (4 \cdot W_\text{ici})$。对一维网格，它化简为 $V / (4 \cdot W_\text{ici})$，正好是 AllGather 的 1/4。在二维里，代价反而随*最小*那条轴的大小下降。
 
-*Aside: If you want a hand-wavy derivation of this fact, start with a 1D torus $\mathbb{Z} / N\mathbb{Z}$. If we pick a source and target node at random, they are on average N / 4 hops from each other, giving us a cost of $(V \cdot N) / (4 * N)$. Now if we consider an ND torus, each axis is basically independent. Each node has $1 / N$ bytes and on average has to hop its data $\max(A, B, C, …) / 4$ hops. You can also derive this from bisection bandwidth: in an AllToAll, each half of the mesh sends half its data ($V / 4$ bytes) to the other half. The narrowest bisection cuts perpendicular to the longest axis, crossing $2 \cdot N / \max(A, B, …)$ links (two cut planes, counting wraparound), for a one-directional bandwidth of $N \cdot W_\text{ici} / \max(A, B, …)$. Dividing gives the formula above.*
+*旁注：想要一个不太严格的推导，可以从一维环面 $\mathbb{Z} / N\mathbb{Z}$ 出发。随机挑一个源节点和目标节点，它们平均相距 N / 4 跳，于是代价是 $(V \cdot N) / (4 * N)$。再看 N 维环面：每条轴基本互不相干。每台设备持有 $1 / N$ 的字节，平均要把数据传 $\max(A, B, C, …) / 4$ 跳。也可以从对分带宽推：AllToAll 中，网格的一半要把自己一半的数据（$V / 4$ 字节）发给另一半。最窄的对分切面垂直于最长轴，切过 $2 \cdot N / \max(A, B, …)$ 条链路（两个切面，算上绕回），单向带宽即 $N \cdot W_\text{ici} / \max(A, B, …)$。两者相除就是上面的公式。*
 
-### More about the ReduceScatter
+### 再深入谈谈 ReduceScatter
 
-ReduceScatter is a more fundamental operation than it first appears, as it is actually the derivative of an AllGather, and vice versa. i.e. if in the forward pass we have:
+ReduceScatter 比乍看起来更根本：它其实是 AllGather 的"导数"，反过来也是。也就是说，若前向传播里有：
 
 $$\textbf{AllGather}_X A[I_X] \rightarrow A[I]$$
 
-Then we ReduceScatter the reverse-mode derivatives **A'** (which will in general be different on each shard) to derive the sharded **A'**:
+那么反向传播时，把反向模式导数 **A'**（各分片一般各不相同）做一次 ReduceScatter，就得到分片状的 **A'**：
 
 $$\textbf{ReduceScatter}_X A'[I] \{ U_X \} \rightarrow A'[I_X]$$
 
-Likewise, $$\text{ReduceScatter}_X(A[I] \{U_X\}) \to A[I_X]$$ in the forward pass implies $$\text{AllGather}_{X}(A'[I_X]) \to A'[I]$$ in the backwards pass.
+同理，前向的 $$\text{ReduceScatter}_X(A[I] \{U_X\}) \to A[I_X]$$ 意味着反向的 $$\text{AllGather}_{X}(A'[I_X]) \to A'[I]$$。
 
-{% details For details on how AllGather and ReduceScatter are derivatives of each other, click here. %}
+{% details AllGather 和 ReduceScatter 为何互为导数，点此展开。 %}
 
-This stems from the fact that broadcasts and reductions are transposes of each other as linear operators, and AllGather and ReduceScatter are outer products (also known as [Kronecker products](https://en.wikipedia.org/wiki/Kronecker_product)) of broadcast and reduce, respectively. Concretely, if we have a vector $x \in \mathbb{R}^n$, any number of devices $p \in \mathbb{N}$, and we let $u = (1, \ldots, 1) \in \mathbb{R}^p$, we can define broadcast and reduce in the following way, which should match your intuitive understanding of them:
+这源于一个事实：广播和归约作为线性算子互为转置，而 AllGather 和 ReduceScatter 分别是广播和归约的外积（也叫 [Kronecker 积](https://en.wikipedia.org/wiki/Kronecker_product)）。具体地说，给一个向量 $x \in \mathbb{R}^n$、任意设备台数 $p \in \mathbb{N}$，并记 $u = (1, \ldots, 1) \in \mathbb{R}^p$，我们可以如下定义广播和归约——它应该和你的直觉一致：
 
 $$
 \begin{align*}
@@ -506,7 +506,7 @@ $$
 \end{align*}
 $$
 
-Let's see how this looks in an example, where $n = 1$, $p = 2$. If $x = (7)$, we have $$\text{broadcast}(x) = \left(\begin{pmatrix} 1 \\ 1 \end{pmatrix} \otimes \begin{pmatrix} 1 \end{pmatrix}\right) x = \begin{pmatrix} 1 \\ 1 \end{pmatrix} x = \begin{pmatrix}  7\\  7  \end{pmatrix} \in \mathbb{R}^{p n}$$. This matches what we'd expect, broadcasting a vector in $\mathbb{R}^n$ to $\mathbb{R}^{pn}$. Now letting $y = (8, 9)$, we have $$\text{reduce}(y) = \left(\begin{pmatrix} 1 & 1 \end{pmatrix} \otimes \begin{pmatrix} 1\end{pmatrix}\right) y = \begin{pmatrix} 1 & 1  \end{pmatrix} \begin{pmatrix}  8 \\ 9  \end{pmatrix} = \begin{pmatrix}   17    \end{pmatrix}$$. This again matches what we'd expect, reducing a vector in $\mathbb{R}^{p n}$ to a vector in $\mathbb{R}^{n}$. Since $(A \otimes B)^T = A^T \otimes B^T$ for any two matrices $A$ and $B$, we see that $\text{reduce} = \text{broadcast}^T$. We recover AllGather and ReduceScatter as the following outer products:
+看一个例子，$n = 1$，$p = 2$。若 $x = (7)$，则 $$\text{broadcast}(x) = \left(\begin{pmatrix} 1 \\ 1 \end{pmatrix} \otimes \begin{pmatrix} 1 \end{pmatrix}\right) x = \begin{pmatrix} 1 \\ 1 \end{pmatrix} x = \begin{pmatrix}  7\\  7  \end{pmatrix} \in \mathbb{R}^{p n}$$。这正符合预期：把 $\mathbb{R}^n$ 里的向量广播成 $\mathbb{R}^{pn}$ 里的向量。再取 $y = (8, 9)$，则 $$\text{reduce}(y) = \left(\begin{pmatrix} 1 & 1 \end{pmatrix} \otimes \begin{pmatrix} 1\end{pmatrix}\right) y = \begin{pmatrix} 1 & 1  \end{pmatrix} \begin{pmatrix}  8 \\ 9  \end{pmatrix} = \begin{pmatrix}   17    \end{pmatrix}$$。这也符合预期：把 $\mathbb{R}^{p n}$ 里的向量归约成 $\mathbb{R}^{n}$ 里的向量。由于对任意矩阵 $A$、$B$ 都有 $(A \otimes B)^T = A^T \otimes B^T$，我们看到 $\text{reduce} = \text{broadcast}^T$。而 AllGather 和 ReduceScatter 就是下面这些外积：
 
 $$
 \begin{align*}
@@ -517,211 +517,211 @@ $$
 \end{align*}
 $$
 
-Here we think of $\mathbb{R}^{p^2 n}$ as $\mathbb{R}^{p \times p n}$, so one $\mathbb{R}^{p n}$ vector for each of our $p$ devices. We suggest playing around with small examples, say $n = 2$, $p = 3$, to see what these operators look like as matrices. Using the same transposition property, we once more obtain $\text{AllGather}^T = \text{ReduceScatter}$, and of course $\text{ReduceScatter}^T = \text{AllGather}$. This transposition will arise during backpropagation, since if we have $y = Ax$ for some linear operator $A$, such as AllGather or ReduceScatter, then during backpropagation we will have the derivative of the loss with respect to $y$, $\frac{\partial L}{\partial y}$, and we obtain $\frac{\partial L}{\partial x}$ as $\frac{\partial L}{\partial x} = A^T \frac{\partial L}{\partial y}$. This shows how the derivative of AllGather will be ReduceScatter, and vice versa.
+这里把 $\mathbb{R}^{p^2 n}$ 看作 $\mathbb{R}^{p \times p n}$，即 $p$ 台设备各持有一个 $\mathbb{R}^{p n}$ 向量。建议拿 $n = 2$、$p = 3$ 这样的小例子亲手算一算，看看这些算子长什么样。再用一次转置性质，就得到 $\text{AllGather}^T = \text{ReduceScatter}$，当然也有 $\text{ReduceScatter}^T = \text{AllGather}$。反向传播时这个转置就会出现：若 $y = Ax$，其中 $A$ 是某个线性算子（比如 AllGather 或 ReduceScatter），反向传播时我们手上有损失对 $y$ 的导数 $\frac{\partial L}{\partial y}$，而 $\frac{\partial L}{\partial x} = A^T \frac{\partial L}{\partial y}$。这就说明 AllGather 的导数是 ReduceScatter，反之亦然。
 
 {% enddetails %}
 
-Turning an AllReduce into an AllGather and ReduceScatter also has the convenient property that we can defer the final AllGather until some later moment. Very commonly we'd rather not pay the cost of reassembling the full matrix product replicated across the devices. Rather we'd like to preserve a sharded state even in this case of combining two multiplicands with sharded contracting dimensions:
+把 AllReduce 拆成 ReduceScatter + AllGather 还有个方便之处：最后那次 AllGather 可以先不做，留到以后。我们经常并不愿意付"把整个矩阵乘积重新拼成完整、每台一份"的代价，而宁愿在"两个乘数的收缩维都被分片"的情形下保持分片状态：
 
 $$A[I, J_X] \cdot B[J_X, K] \rightarrow C[I, K_X]$$
 
-In this case, we can also perform a ReduceScatter instead of an AllReduce, and then optionally perform the AllGather at some later time, i.e.
+这时我们可以只做一次 ReduceScatter 而不做 AllReduce，最后需要时再做 AllGather，即：
 
 $$\begin{align*}
 A[I, J_X] \cdot_{LOCAL} B[J_X, K] \rightarrow &\ C[I, K] \{ U_X \} \\
 \textbf{ReduceScatter}_{X,K} C[I, K] \{ U_X \} \rightarrow &\ C[I, K_X]
 \end{align*}$$
 
-Note that ReduceScatter *introduces* a sharded dimension, and so has a natural freedom to shard along either the **I** or **K** named dimensions in this case. We generally need to choose *which* named dimension to introduce a new sharding to when using a ReduceScatter (though the choice is usually forced by the larger modeling context). This is why we use the syntax **ReduceScatter<sub>X,K</sub>** to specify the axis to shard.
+注意 ReduceScatter 会*引入*一个新的分片维，所以这里有"沿 **I** 还是沿 **K** 命名维分片"的选择自由。用 ReduceScatter 时我们一般得*指定*往哪条命名维引入新分片（当然，选择通常由整个模型的上下文决定）。这就是我们写 **ReduceScatter<sub>X,K</sub>** 来指定分片轴的原因。
 
-### How to overlap matmul communication with compute
+### 怎样让矩阵乘法的通信和计算重叠
 
-As we discussed in [Part 1](../roofline), we generally assume we can always overlap communication with some useful computation if the comms are fast enough. The collectives in this section generally can be overlapped with the matrix multiplication compute itself, but doing so is non-trivial. The algorithm we use is something called a **collective matmul**, first described in [Wang et al.](https://dl.acm.org/doi/pdf/10.1145/3567955.3567959). Here is a simplified animation of how this overlap can be implemented:
+正如[第 1 部分](../roofline)讲的，只要通信足够快，我们通常可以假设通信总能和一些有用的计算重叠。本节的集合通信原则上也能和矩阵乘法的计算本身重叠，但做起来不容易。我们用的算法叫**集合通信矩阵乘法（collective matmul）**，最早出自 [Wang et al.](https://dl.acm.org/doi/pdf/10.1145/3567955.3567959)。下面是这种重叠的简化动画：
 
-{% include figure.liquid path="assets/img/ag_matmul.gif" caption="<b>Figure:</b> an animation showing how a single sharded matrix-vector product can be overlapped with the resulting AllReduce (case 3 above). A full matmul is composed of multiple matrix-vector products." %}
+{% include figure.liquid path="assets/img/ag_matmul.gif" caption="<b>图：</b>一段动画，展示一次分片矩阵-向量乘法如何与随后的 AllReduce（上面的情形 3）重叠。完整的矩阵乘法由多次矩阵-向量乘法组成。" %}
 
-To put it simply, we can do the matmul for one chunk of the matrix while starting the ring reduction for previous chunks. In some cases we can also tile over the batch dimension or matrix input dimension. We work through a simple JAX implementation in [Part 10](../jax-stuff) and [the Mosaic docs](https://docs.jax.dev/en/latest/pallas/gpu/collective_matmul.html) also give a good example on GPU. We encourage you to implement a version of this at some point. 
+说白了，就是在做某一块矩阵乘法的*同时*，启动前面那些块的环状归约。某些情况下，我们还可以沿批或矩阵输入维做分块流水。[第 10 部分](../jax-stuff)给出了一个简单的 JAX 实现，[Mosaic 文档](https://docs.jax.dev/en/latest/pallas/gpu/collective_matmul.html)也有一个不错的 GPU 版例子。鼓励你亲手实现一次。
 
-## What Have We Learned?
+## 我们学到了什么？
 
-* The sharding of an array is specified by a **Mesh** that names the physical, hardware axes of our TPU mesh and a **Sharding** that assigns mesh axis names to the logical axes of the array.
-  * For example, **A**[I<sub>XY</sub>, J] describes an abstract array **A** with its first dimension sharded along two mesh axes X and Y. Combined with Mesh(mesh_shape=(4, 8), axis_names=('X', 'Y')) or the abbreviated Mesh({'X': 4, 'Y': 8}), this tells us our array is sharded 32 ways along the first dimension.
+* 一个数组的分片，由两部分描述：**Mesh** 给 TPU 网格的物理硬件轴起名字；**Sharding** 把网格轴名指派给数组的逻辑轴。
+  * 例如 **A**[I<sub>XY</sub>, J] 描述一个抽象数组 **A**，第一维沿 X、Y 两条网格轴分片。再配上 Mesh(mesh_shape=(4, 8), axis_names=('X', 'Y'))（简写 Mesh({'X': 4, 'Y': 8})），就说明数组的第一维被 32 路分片了。
 
-* **Arithmetic with sharded arrays works exactly like with unsharded arrays unless you perform a contraction along a sharded axis**. In that case, we have to introduce some communication. We consider four cases:
+* **对分片数组做算术，结果和不分片时完全一样——除非你沿被分片的轴做了收缩（求和）**。那种时候就得引入一些通信。我们归纳了四种情形：
 
-  1. *Neither array is sharded along the contracting dimension*: no communication is needed.
-  2. *One array is sharded along the contracting dimension* (or the contracting dimensions are sharded along different axes): we AllGather one of the inputs before performing the operation.
-  3. *Both arrays are identically sharded along the contracting dimension:* we multiply the shards locally then perform an AllReduce or ReduceScatter.
-  4. *Both arrays are sharded along the same mesh axis along a non-contracting dimension:* we AllGather one of the inputs first.
+  1. *两个数组沿收缩维都没分片*：不需要通信。
+  2. *有一个数组沿收缩维分片*（或两个收缩维沿不同轴分片）：先把其中一个输入 AllGather，再做运算。
+  3. *两个数组沿收缩维、沿同一条轴以同样方式分片*：本地先乘，再做一次 AllReduce 或 ReduceScatter。
+  4. *两个数组都有非收缩维沿同一条网格轴分片*：先把其中一个输入 AllGather。
 
-* TPUs use roughly **4 core communication primitives**:
-  1. AllGather: $[A_X, B] \to [A, B]$
-  2. ReduceScatter: $[A, B] \\{U_X\\} \to [A_X, B]$
-  3. AllToAll: $[A, B_X] \to [A_X, B]$
-  4. AllReduce: $[A_X, B]\\{U_Y\\} \to [A_X, B]$ (technically not a primitive since it combines a ReduceScatter + AllGather)
+* TPU 大致用到 **4 种核心通信原语**：
+  1. AllGather：$[A_X, B] \to [A, B]$
+  2. ReduceScatter：$[A, B] \\{U_X\\} \to [A_X, B]$
+  3. AllToAll：$[A, B_X] \to [A_X, B]$
+  4. AllReduce：$[A_X, B]\\{U_Y\\} \to [A_X, B]$（严格说不算原语，它是 ReduceScatter + AllGather 的组合）
 
 {% include figure.liquid path="assets/img/all-collectives.png" class="img-fluid" %}
 
-* The cost and latency of each of these operations **doesn't depend on the size of the axis (as long as they're bandwidth bound)**, but only on the size of the input arrays and the bandwidth of the link. For a unidirectional AllGather/ReduceScatter:
+* 这些操作的时间与延迟，**在带宽受限区间里不依赖轴的大小**，只取决于输入数组的大小和链路带宽。对一次单向 AllGather/ReduceScatter：
 
 $$T_{\text{comm per AllGather or ReduceScatter}} = \frac{\text{Data volume}}{\text{bandwidth}} \cdot \frac{\text{Axis} - 1}{\text{Axis}}
 \longrightarrow \frac{\text{Data volume}}{\text{bandwidth (bidirectional)}}$$
 
-* An AllReduce is composed of a ReduceScatter followed by an AllGather, and thus has 2x the above cost. An AllToAll only has to pass shards part-way around the ring and is thus ¼ the cost of an AllGather. Here's a summary:
+* AllReduce 由一次 ReduceScatter 加一次 AllGather 组成，因此是上面代价的 2 倍。AllToAll 只需把分片沿环传半程，因此只有 AllGather 的 ¼。总结如下：
 
-| Operation         | Description                                                                                                        | Syntax                           | Runtime                                          |
+| 操作              | 描述                                                                                                        | 语法                           | 耗时                                          |
 | :---------------- | :----------------------------------------------------------------------------------------------------------------- | :------------------------------- | :----------------------------------------------- |
-| **AllGather**     | Gathers all the shards of a sharded array along an axis, removing a subscript.                                     | $[A_X, B] \to [A, B]$            | bytes / (bidirectional ICI bandwidth * num_axes) |
-| **ReduceScatter** | Sums a partially summed array along an axis and shards it along another axis (adding a subscript).                 | $[A, B] \\{U_X\\} \to [A_X, B]$  | Same as AllGather                                |
-| **AllReduce**     | Sums a partially summed array along an axis. Removes a { U<sub>x</sub> }. Combines an AllGather and ReduceScatter. | $[A_X, B]\\{U_Y\\} \to [A_X, B]$ | 2 * AllGather                                    |
-| **AllToAll**      | Gathers (replicates) an axis and shards a different dimension along the same axis.                                 | $[A, B_X] \to [A_X, B]$          | AllGather / 4 for a bidirectional ring           |
+| **AllGather**     | 沿某轴收集分片、去掉一个下标。                                     | $[A_X, B] \to [A, B]$            | 字节数 /（双向 ICI 带宽 × 轴数） |
+| **ReduceScatter** | 沿某轴把部分和加起来，转而沿另一条维分片（加一个下标）。                 | $[A, B] \\{U_X\\} \to [A_X, B]$  | 与 AllGather 相同                                |
+| **AllReduce**     | 沿某轴把部分和加起来，去掉一个 { U<sub>x</sub> }。是 AllGather 和 ReduceScatter 的组合。 | $[A_X, B]\\{U_Y\\} \to [A_X, B]$ | AllGather 的 2 倍                                    |
+| **AllToAll**      | 收集（复制）一条轴，同时沿同一条轴分片另一条维。                                 | $[A, B_X] \to [A_X, B]$          | 双向环上为 AllGather 的 1/4           |
 
-## Some Problems to Work
+## 动手解题 {#some-problems-to-work}
 
-*Here are some instructive problems based on content in this section. We won't include all answers at the moment but we'll write up more answers as we can.*
+*这里有一些与本节内容配套的练习题。目前不会给出全部答案，但我们会陆续补上。*
 
-**Question 1 [replicated sharding]**: An array is sharded $A[I_X, J, K, \ldots]$ (i.e., only sharded across $X$), with a mesh `Mesh({'X': 4, 'Y': 8, 'Z': 2})`.  What is the ratio of the total number of bytes taken up by $A$ across all chips to the size of one copy of the array?
+**问题 1 [复制式分片]**：数组按 $A[I_X, J, K, \ldots]$ 分片（只沿 $X$ 分片），网格 `Mesh({'X': 4, 'Y': 8, 'Z': 2})`。$A$ 在所有芯片上占的总字节数，与单份数组大小之比是多少？
 
-{% details Click here for the answer. %}
+{% details 点此查看答案。 %}
 
-Our array is only sharded along X, which has size 4, so effectively each shard has size $[I / 4, J, K, \ldots] = \text{sizeof}(A) / 4$. Since our array is replicated across Y and Z, the total size is $Y \cdot Z \cdot \text{sizeof}(A)$, so the ratio of total size to single chip size is $Y \cdot Z \cdot \text{sizeof}(A) / \text{sizeof}(A) = 16$.
-
-{% enddetails %}
-
-**Question 2 [AllGather latency]**: How long should $\text{AllGather}_X([B_X, D_Y])$ take on a TPU v4p 4x4x4 slice with mesh `Mesh({'X': 4, 'Y': 4, 'Z': 4})` if $B=1024$ and $D=4096$ in bfloat16? How about $$\text{AllGather}_{XY}([B_X, D_Y])$$? How about $$\text{AllReduce}_Z([B_X, D_Y] \{U_Z \})$$?
-
-{% details Click here for the answer. %}
-
-We have a wraparound link on all axes because we have a full `4x4x4` cube, so we have 9e10 bidirectional bandwidth to work with.
-
-1. Because we're just gathering over one axis and the other is sharded, we're effectively gathering $2BD / Y$ bytes over 1 axis. *If you think about just a single shard along the Y-axis, the AllGather along X looks like an unsharded AllGather with 1 / Y of the bytes.* Since our ICI bandwidth for TPU v4p is 9e10 bytes/second bidirectional, this will take $2BD / (\text{9e10} \cdot Y) = 2 \cdot 1024 \cdot 4096 / (\text{9e10} \cdot 4) = 23 \mu s$.
-
-2. We have twice the bandwidth as before but we're AllGathering the full array, so `T = 2BD / (2 * W) = 2*1024*4096 / (2 * 9e10) = 46us`. This is far from the latency bound of 4us (1us per hop), so we're fine.
-
-3. The cost of an AllReduce is twice that of an AllGather. Each shard has size $2BD / (X * Y)$, so the cost is about $4BD / (X * Y * W)$, or roughly `4 * 1024 * 4096 / (16 * 9e10) = 11.6us`.
-
-*Fun fact:* parts (1) and (2) aren't actually optimal, because the array is also replicated along the unused Z axis, and we can exploit those idle links: we can first re-shard $[B_X, D_Y] \to [B_{XZ}, D_Y]$ for free (each device just drops part of its shard) and then perform $$\text{AllGather}_{XZ}$$ (or $$\text{AllGather}_{XYZ}$$), reaching the same final state while gathering over more axes. This cuts part (1) to 11.5us and part (2) to 31us — in practice you'd get this by just sharding over more axes up front, which is one reason to shard arrays as finely as possible.
+我们的数组只沿 X（大小 4）分片，所以每片实际大小是 $[I / 4, J, K, \ldots] = \text{sizeof}(A) / 4$。又因为沿 Y 和 Z 复制，总大小是 $Y \cdot Z \cdot \text{sizeof}(A)$。于是总大小与单份大小之比为 $Y \cdot Z \cdot \text{sizeof}(A) / \text{sizeof}(A) = 16$。
 
 {% enddetails %}
 
-**Question 3 [latency-bound AllGather]**: Let's say we're performing an $\text{AllGather}_X([B_X])$ but $B$ is very small (say 128). How long should this take on a TPU v4p 4x4x4 slice with mesh `Mesh({'X': 4, 'Y': 4, 'Z': 4})` in bfloat16? *Hint: you're probably latency bound.*
+**问题 2 [AllGather 延迟]**：在 TPU v4p 4x4x4 切片、网格 `Mesh({'X': 4, 'Y': 4, 'Z': 4})` 上，$\text{AllGather}_X([B_X, D_Y])$ 应该要多久？设 $B=1024$、$D=4096$，bfloat16。那 $$\text{AllGather}_{XY}([B_X, D_Y])$$ 呢？$$\text{AllReduce}_Z([B_X, D_Y] \{U_Z \})$$ 呢？
 
-{% details Click here for the answer. %}
+{% details 点此查看答案。 %}
 
-Our array in bfloat16 uses only 256 bytes total, and only 64 per device. Since we have an axis of size 4 on a TPU v4p, we have a wraparound link, so we can send the array in both directions. With `4.5e10` of unidirectional bandwidth, each hop would take roughly `64 / 4.5e10 ~ 0`, so we're definitely latency bound. Counting the number of hops, we can do the full gather in only 2 hops, so roughly 2us a good estimate.
+完整的 `4x4x4` 立方体在每条轴上都有绕回链路，所以可用的双向带宽是 9e10。
+
+1. 我们只沿一条轴收集，另一条维是分片状态，所以实际上是对 $2BD / Y$ 字节做单轴收集。*只盯着沿 Y 轴的单个分片看，这次 AllGather 相当于一次字节数只有 1 / Y 的、不分片的 AllGather。* TPU v4p 的双向 ICI 带宽是 9e10 字节/秒，因此耗时 $2BD / (\text{9e10} \cdot Y) = 2 \cdot 1024 \cdot 4096 / (\text{9e10} \cdot 4) = 23 \mu s$。
+
+2. 带宽翻倍，但要对整个数组做 AllGather，所以 `T = 2BD / (2 * W) = 2*1024*4096 / (2 * 9e10) = 46us`。这离延迟下限 4us（每跳 1us）很远，没问题。
+
+3. AllReduce 的代价是 AllGather 的两倍。每片大小 $2BD / (X * Y)$，所以代价约 $4BD / (X * Y * W)$，即 `4 * 1024 * 4096 / (16 * 9e10) = 11.6us`。
+
+*有趣的事实：* 第 (1)、(2) 问的算法其实不是最优的——数组沿没用到的 Z 轴也是复制的，这些闲置链路可以利用：先免费把 $[B_X, D_Y] \to [B_{XZ}, D_Y]$ 重新分片（每台设备直接丢掉自己一部分数据就行），再做 $$\text{AllGather}_{XZ}$$（或 $$\text{AllGather}_{XYZ}$$），到达同样的最终状态，但沿更多轴收集。这能把第 (1) 问降到 11.5us、第 (2) 问降到 31us——实践中你只要一开始就往更多轴上分片就能得到这个效果。这也是"数组要尽可能切细"的一个理由。
 
 {% enddetails %}
 
-**Question 4 [matmul strategies]**: To perform $X[B, D] \cdot_D Y[D_X, F] \to Z[B, F]$, in this section we tell you to perform $\text{AllGather}_X(Y[D_X, F])$ and multiply the fully replicated matrices (Case 2, *Strategy 1*). Instead, you could multiply the local shards like $X[B, D_X] \cdot_D Y[D_X, F] \to Z[B, F] \\{U_X\\}$ (Case 3, *Strategy 2*), and then $\text{AllReduce}_X(Z[B, F] \\{ U_X\\})$. How many FLOPs and comms does each of these perform? Which is better and why?
+**问题 3 [延迟受限的 AllGather]**：做一次 $\text{AllGather}_X([B_X])$，但 $B$ 非常小（比如 128）。在 TPU v4p 4x4x4 切片、网格 `Mesh({'X': 4, 'Y': 4, 'Z': 4})` 上，bfloat16，应该要多久？*提示：多半是延迟受限的。*
 
-{% details Click here for the answer. %}
+{% details 点此查看答案。 %}
 
-Let's start with our baseline (*Strategy 1*). As we've shown, the cost of the AllGather is $2DF / W_\text{ici}$. Once we have the fully replicated arrays, the total compute time is $2BDF / C$ (where $C$ is our accelerator FLOPs/s, since each TPU does the same FLOPs). So we have
+这个数组 bfloat16 下总共才 256 字节，每台设备只有 64 字节。轴长为 4 的 TPU v4p 有绕回链路，可以双向发送。单向带宽 `4.5e10`，每跳传输耗时 `64 / 4.5e10 ~ 0`，所以妥妥的延迟受限。数一下跳数：整个收集只需 2 跳，所以大约 2us 是个不错的估计。
+
+{% enddetails %}
+
+**问题 4 [矩阵乘法的策略]**：要计算 $X[B, D] \cdot_D Y[D_X, F] \to Z[B, F]$，本节教你的做法是先 $\text{AllGather}_X(Y[D_X, F])$、再乘完整矩阵（情形 2，*策略 1*）。你也可以先本地乘：$X[B, D_X] \cdot_D Y[D_X, F] \to Z[B, F] \\{U_X\\}$（情形 3，*策略 2*），再 $\text{AllReduce}_X(Z[B, F] \\{ U_X\\})$。两种策略各做多少 FLOPs、多少通信？哪个更好，为什么？
+
+{% details 点此查看答案。 %}
+
+先看基准方案（*策略 1*）。如前所述，AllGather 的代价是 $2DF / W_\text{ici}$。拿到完整数组后，计算时间是 $2BDF / C$（$C$ 是加速器的 FLOPs/s，每台 TPU 做同样的 FLOPs）。于是
 
 $$T_\text{total (Strategy 1)} = \max\left(\frac{2BDF}{C}, \frac{2DF}{W_\text{ici}}\right)$$
 
-By comparison, the new strategy (Strategy 2) does an AllReduce over $2BF$ bytes, which has cost $4BF / W_\text{ici}$ but does $1 / X$ fewer FLOPs (since the computation is sharded). This means we do $2\cdot B\cdot D\cdot F / X$ FLOPs and the resulting AllReduce communicates $$2 \cdot 2 \cdot B \cdot F$$ bytes in bfloat16. Thus, our total time for *Strategy 2* (no AllGather, just an AllReduce later on) is roughly
+相比之下，新策略（策略 2）要对 $2BF$ 字节做 AllReduce，代价 $4BF / W_\text{ici}$，但 FLOPs 少做 $1 / X$（计算是分片的）。也就是说做 $2\cdot B\cdot D\cdot F / X$ 次 FLOPs，随后的 AllReduce 在 bfloat16 下通信 $$2 \cdot 2 \cdot B \cdot F$$ 字节。于是*策略 2*（没有 AllGather，最后只做 AllReduce）的总时间大致是
 
 $$T_\text{total} = \max\left(\frac{2BDF}{X \cdot C}, \frac{4BF}{W_\text{ici}}\right)$$
 
-The question is: *which of these is bigger?* Strategy (2) is compute bound when $D / (X \cdot C) > 2 / W_\text{ici}$, or when $D / 2X > C / W_\text{ici} \approx 2550 \rightarrow X < D / (2 * 2550)$. We might reasonably expect $D \approx 8k$, so this would mean roughly $X < 2$ which is unlikely – hence we're basically always comms bound with Strategy 2. With the baseline (Strategy 1), we're comms bound when $$B < C / W_\text{ici} = 2550$$ which is often but not always true.
+问题是：*这两个哪个更大？* 当 $D / (X \cdot C) > 2 / W_\text{ici}$，即 $D / 2X > C / W_\text{ici} \approx 2550 \rightarrow X < D / (2 * 2550)$ 时，策略 (2) 是计算受限的。合理的预期是 $D \approx 8k$，那么 $X < 2$——不太可能。所以策略 2 基本上总是被通信卡住。而基准方案（策略 1）在 $$B < C / W_\text{ici} = 2550$$ 时被通信卡住，这经常但并非总是成立。
 
-So if $B < 2550$, we're comms-bound in both cases and we have
+于是当 $B < 2550$ 时，两个方案都是通信受限，此时
 
 $$T_\text{comms for Strategy 2} < T_\text{comms for Strategy 1} \Leftrightarrow \frac{4BF}{W_\text{ici}} < \frac{2DF}{W_\text{ici}}$$
 
-which is true when $D > 2B$ where $2B < 5100$. This is often true, so Strategy 2 can sometimes be better if our batch is small. When our batch is large ($B > 2550$), we have
+在 $D > 2B$（而 $2B < 5100$）时成立。这经常成立，所以批大小不大时策略 2 有时更好。批很大（$B > 2550$）时：
 
 $$T_\text{comms for Strategy 2} < T_\text{math for Strategy 1} \Leftrightarrow \frac{4BF}{W_\text{ici}} < \frac{2BDF}{C}$$
 
-This is true when $2 / W_\text{ici} < D / C$, or when $D > 2 * 2550 = 5100$, which is usually true for large models. So this alternative strategy is typically better for large models, unless $D$ is small.
+这在 $2 / W_\text{ici} < D / C$、即 $D > 2 * 2550 = 5100$ 时成立——对大模型通常成立。所以对大模型，这个替代策略通常是更好的，除非 $D$ 很小。
 
-*Why don't we always do this?* Well, in practice we may do this sometimes, but it's typically rare to have the contracting dimension of one of the inputs to a matmul sharded along an axis that the other input isn't sharded over. For instance, if we're doing FSDP (explained in [Section 5](../training)), we'll shard our parameters over the data dimension but our activations will _also be sharded along data_. So in this sense this doesn't show up much.
-
-{% enddetails %}
-
-**Question 5 [minimum latency]**: Let's say I want to do a matmul $A[I, J] \cdot_J B[J, K] \to C[I, K]$ on a TPU v4p 4x4x4 with the lowest possible latency. Assume the inputs can be sharded arbitrarily but the result should be fully replicated. How should my inputs be sharded? What is the total FLOPs and comms time?
-
-{% details Click here for the (partial) answer. %}
-
-We won't provide a full answer here, but we'll start by describing the four most likely options:
-
-1. $A[I_{XYZ}, J] \cdot B[J, K]$ + AG at the end
-2. $A[I, J] \cdot B[J, K_{XYZ}]$ + AG at the end
-3. $A[I, J_{XYZ}] \cdot B[J_{XYZ}, K]$ + AR at the end
-4. $A[I, J] \cdot B[J, K]$ (fully replicated)
-
-We could also consider sharding different axes along different mesh axes, but that isn't likely to change the final cost. For all but (4), the total FLOPs per TPU is the same, but comms are different for each. We then simply need to calculate the comms cost for each and see which is lowest. The TLDR is that (1) and (2) are equally good.
+*为什么不总这么干？* 实践中有时确实会这么做，但"矩阵乘法某个输入的收缩维沿一条轴分片、另一个输入却不沿这条轴分片"这种布局本来就少见。比如做 FSDP（[第 5 部分](../training)会讲）时，参数沿数据维分片，激活*同样也沿数据维分片*。所以从这个意义上说，这个情形不常出现。
 
 {% enddetails %}
 
-**Question 6:** Let's say we want to perform $A[I_X, J_Y] \cdot_J B[J_Y, K] \to C[I_X, K]$ on TPU v5e 4x4. What communication do we perform? How much time is spent on communication vs. computation?
+**问题 5 [最低延迟]**：假设我要在 TPU v4p 4x4x4 上做矩阵乘法 $A[I, J] \cdot_J B[J, K] \to C[I, K]$，并希望延迟尽可能低。输入可以随意分片，但结果必须是完整复制的。输入应该怎么分片？总的 FLOPs 和通信时间是多少？
 
-* What about $A[I_X, J] \cdot_J B[J_X, K_Y] \to C[I_X, K_Y]$? This is the most standard setting for training where we combine data, tensor, and ZeRO sharding. 
-* What about $A[I_X, J] \cdot_J B[J, K_Y] \to C[I_X, K_Y]$? This is standard for inference, where we do pure tensor parallelism (+data).
+{% details 点此查看（部分）答案。 %}
 
-**Question 7:** A typical Transformer block has two matrices $W_\text{in}[D, F]$ and $W_\text{out}[F, D]$ where $F \gg D$. Say we have a batch size B. Then the full block is $In[B, D] \cdot W_\text{in}[D, F] \cdot W_\text{out}[F, D]$. Let's pick $D=8192$, $F=32768$, and $B=128$ and assume everything is in bfloat16. Assume we're running on a TPU v5e 2x2 slice but let's pretend each TPU only has 300MB of free memory. How should In, $W_\text{in}$, $W_\text{out}$, and Out be sharded to stay below the memory limit while minimizing overall time? How much time is spent on comms and FLOPs? *Hint: the final output doesn't need to be fully replicated, but it should be sharded the same as the input so the "layer" can be repeated.*
+这里不给完整答案，只列出 4 个最可能的方案：
 
-{% details Click here for the (partial) answer. %}
+1. $A[I_{XYZ}, J] \cdot B[J, K]$ + 最后做一次 AG
+2. $A[I, J] \cdot B[J, K_{XYZ}]$ + 最后做一次 AG
+3. $A[I, J_{XYZ}] \cdot B[J_{XYZ}, K]$ + 最后做一次 AR
+4. $A[I, J] \cdot B[J, K]$（完全复制）
 
-First let's think about memory. Each of our two big matrices uses `2 * 8192 * 32768 = 536MB`. Our activations `In` have size `2 * 128 * 8192 = 2MB` (small enough not to worry about). Since we only have 300MB of spare memory in each device, we clearly need to shard our matmuls.
-
-1. $In[B_X, D] * W_\text{in}[D_{XY}, F] * W_\text{out}[F, D_{XY}] \rightarrow Out[B_X, D]$ (this is often called FSDP)
-2. $In[B, D_{XY}] * W_\text{in}[D, F_{XY}] * W_\text{out}[F_{XY}, D] \rightarrow Out[B, D_{XY}]$ (this is called tensor parallelism)
-
-The first is pretty bad because we need to AllGather our big weights or our activations first. The second requires an AllGather at the beginning and a ReduceScatter at the end (which is cheaper than an AllReduce). I'll leave it as an exercise to do the rest of the math.
+也可以考虑把不同轴分片到不同网格轴上，但那不太可能改变最终成本。除 (4) 外，每块 TPU 的总 FLOPs 都一样，只是通信各不相同。逐一算出通信代价、挑最低的即可。结论是 (1) 和 (2) 一样好。
 
 {% enddetails %}
 
-**Question 8 [challenge]**: Using the short code snippet above as a template, allocate a sharded array and benchmark each of the 4 main communication primitives (AllGather, AllReduce, ReduceScatter, and AllToAll) using pmap or shard_map. You will want to use `jax.lax.all_gather`, `jax.lax.psum`, `jax.lax.psum_scatter`, and `jax.lax.all_to_all`. Do you understand the semantics of these functions? How long do they take?
+**问题 6：** 假设要在 TPU v5e 4x4 上做 $A[I_X, J_Y] \cdot_J B[J_Y, K] \to C[I_X, K]$。要做哪些通信？通信和计算各花多少时间？
 
-**Question 9 [another strategy for sharded matmuls?]**: [Above](#case-2-one-multiplicand-has-a-sharded-contracting-dimension) we claimed that when only one input to a matmul is sharded along its contracting dimension, we should AllGather the sharded matrix and perform the resulting contraction locally. Another strategy you might think of is to perform the sharded matmul and then AllReduce the result (as if both inputs were sharded along the contracting dimension), i.e. $A[I, J_X] *_J B[J, K] \to C[I, K]$ by way of
+* 换成 $A[I_X, J] \cdot_J B[J_X, K_Y] \to C[I_X, K_Y]$ 呢？这是训练中最标准的设置：数据并行、张量并行、ZeRO 分片三者结合。
+* 换成 $A[I_X, J] \cdot_J B[J, K_Y] \to C[I_X, K_Y]$ 呢？这是推理的标准形态：纯张量并行（+数据并行）。
+
+**问题 7：** 典型 Transformer 层有两个矩阵 $W_\text{in}[D, F]$ 和 $W_\text{out}[F, D]$，$F \gg D$。设批大小为 B，整个层就是 $In[B, D] \cdot W_\text{in}[D, F] \cdot W_\text{out}[F, D]$。取 $D=8192$、$F=32768$、$B=128$，全部 bfloat16。假设运行在 TPU v5e 2x2 切片上，并且*假设*每块 TPU 只有 300MB 空闲内存。In、$W_\text{in}$、$W_\text{out}$、Out 应该怎么分片，才能既不超过内存上限又让总时间最小？通信和 FLOPs 各花多少时间？*提示：最终输出不必完整复制，但应与输入的分片方式相同，这样这一"层"才能重复堆叠。*
+
+{% details 点此查看（部分）答案。 %}
+
+先看内存。两个大矩阵各占 `2 * 8192 * 32768 = 536MB`。激活 `In` 的大小是 `2 * 128 * 8192 = 2MB`（小到不用担心）。每台设备只有 300MB 空闲内存，显然必须对矩阵乘法做分片。
+
+1. $In[B_X, D] * W_\text{in}[D_{XY}, F] * W_\text{out}[F, D_{XY}] \rightarrow Out[B_X, D]$（这就是常说的 FSDP）
+2. $In[B, D_{XY}] * W_\text{in}[D, F_{XY}] * W_\text{out}[F_{XY}, D] \rightarrow Out[B, D_{XY}]$（这叫张量并行）
+
+方案 1 很不划算：得先 AllGather 大权重或激活。方案 2 需要开头一次 AllGather、结尾一次 ReduceScatter（这比 AllReduce 便宜）。剩下的数学留作练习。
+
+{% enddetails %}
+
+**问题 8 [挑战题]**：用上面的代码片段做模板，分配一个分片数组，用 pmap 或 shard_map 分别给 4 种主要通信原语（AllGather、AllReduce、ReduceScatter、AllToAll）做基准测试。要用到 `jax.lax.all_gather`、`jax.lax.psum`、`jax.lax.psum_scatter` 和 `jax.lax.all_to_all`。你理解这些函数的语义吗？它们各要花多长时间？
+
+**问题 9 [分片矩阵乘法的另一种策略？]**：我们在上面[情形 2](#case-2-one-multiplicand-has-a-sharded-contracting-dimension)说过：矩阵乘法只有一个输入沿收缩维分片时，应当把分片的矩阵 AllGather 起来，再在本地做收缩。你可能想到的另一种做法是：先分片乘、再把结果 AllReduce（把两边都当成沿收缩维分片了），即 $A[I, J_X] *_J B[J, K] \to C[I, K]$ 通过：
 
 1. $C[I, K] \\{ U_X \\} = A[I, J_X] \cdot B[J_X, K]$
 2. $C[I, K] = \text{AllReduce}(C[I, K] \\{ U_X\\})$
 
-Answer the following:
+回答以下问题：
 
-1. Explicitly write out this algorithm for matrices $A[N, M]$ and $B[M, K]$, using indices to show exactly what computation is done on what device.  Assume $A$ is sharded as $A[I, J_X]$ across ND devices, and you want your output to be replicated across all devices.
-2. Now suppose you are ok with the final result not being replicated on each device, but instead sharded (across either the N or K dimension).  How would the algorithm above change?
-3. Looking purely at the communication cost of the strategy above (in part 2, not 1), how does this communication cost compare to the communication cost of the algorithm in which we first AllGather A and then do the matmul?
+1. 对矩阵 $A[N, M]$ 和 $B[M, K]$，把这个算法用下标明确写出来，写清哪台设备做了什么计算。设 $A$ 按 $A[I, J_X]$ 分片在 ND 设备上，输出要在所有设备上完整复制。
+2. 如果允许最终结果不逐台复制、而是分片（沿 N 或 K 维分片），算法要怎么改？
+3. 只看上面这个策略（第 2 问而非第 1 问）的通信成本：和"先 AllGather A 再做矩阵乘法"的算法相比，通信成本相差多少？
 
-{% details Click here for the answer. %}
+{% details 点此查看答案。 %}
 
 
-1. First compute the outer products, storing the result in $$O[N, K]: o_{kj} = \sum_i a_{ki} b_{ij}$$. Note that the repeated index is not the one being contracted, as we are doing an outer product. Here the sum ranges across the set of i values stored on the particular device we are using. So, for example, if we have a contracting axis of size 16, and 4 devices, then on device 0, i would range from {0, 1, 2, 3}; on device 1, i would range from {4, 5, 6, 7}; on device 2, i would range from {8, 9, 10, 11}; and on device 3, i would range from {12, 13, 14, 15}. Then AllReduce the partial-sums of $O[N, K]$ which live on each device, to form the full $O[N, K]$.
-2. Instead of doing an AllReduce in step 2, we could get away with a cheaper ReduceScatter, along either axis: $[N, K] \\{ U_X \\} \to [N_X, K]$ or $[N, K] \\{ U_X \\} \to [N, K_X]$.
-3. As described in the main text above, the cost of doing an AllGather (when we are throughput-bound) is the same as that of a ReduceScatter; it is simply given by the size of the full matrix we are processing.  So in the gather-then-matmul algorithm, this scales as $NM$ (since we are $\text{AllGather}$-ing $A$); in the matmul-then-reduce-scatter algorithm, this scales as NK (since we are reduce-scattering $O$). So the communication cost ratio of the two algorithms is `M/K`.
-
-{% enddetails %}
-
-**Question 10: Fun with AllToAll:** In the table above, it was noted that the time to perform an AllToAll is a factor of 4 lower than the time to perform an AllGather or ReduceScatter (in the regime where we are throughput-bound). In this problem we will see where that factor of 4 comes from, and also see how this factor would change if we only had single-direction ICI links, rather than bidirectional ICI links.
-
-1. Let's start with the single-direction case first. Imagine we have *D* devices in a ring topology and want to do either an AllGather or a ReduceScatter on an N x N matrix $A[I_X, J]$ (say $D$ divides $N$ for simplicity). Describe the comms involved in these two collectives, and calculate the total number of scalars (floats or ints) which are transferred across **a single** ICI link during the entirety of this algorithm.
-2. Now let's think about an AllToAll, still in the single-directional ICI case.  How is the algorithm different in this case than the all-gather case?  Calculate the number of scalars that are transferred across a single ICI link in this algorithm.
-3. You should have found that the ratio between your answers to part (a) and part (b) is a nice number.  Explain where this factor comes from in simple terms.
-4. Now let's add bidirectional communication. How does this affect the total time needed in the all-gather case?
-5. How does adding bidirectional communication affect the total time needed in the AllToAll case?
-6. Now simply explain the ratio between AllGather time and AllToAll time in a bidirectional ring.
-
-{% details Click here for the answer. %}
-
-(1) **Solution:** The process is simple: in each step of the algorithm, each device will send a single-shard "strip" of the matrix (totalling $$\frac{N}{D} \times N$$ elements in size) to its nearest neighbor. This occurs $$D-1$$ times, since each shard needs to be communicated to all of the devices except the one it starts out on. So in total, $$\frac{N^2(D-1)}{D}$$ scalars are transferred by each device, i.e. flow across a single ICI link.
-
-**Answer:** $$N^2 (1-\frac{1}{D})$$, or simply $$N^2$$ when $$D >> 1$$.
-
-(2) **Solution:** The key difference between an AllToAll and an AllGather, from the perspective of communications, is that in an AllToAll, the entirety of the shard that lives on a particular device does not need to be communicated to every other device. Imagine the shard stored on a particular device (call it device 0) is $$[A, B, C, D]$$ (here A,B,C,D are matrices and we are imagining a ring with 4 devices for illustration). Now the matrix $$A$$ does not need to be communicated anywhere, the matrix $$B$$ needs to end up on device 1; matrix $$C$$ ends up on device 2; and matrix $$D$$ ends up on device 3. So in the first step of the algorithm, we send $$B$$, $$C$$, and $$D$$ to device 1; in the next step, device 1 sends $$C$$ and $$D$$ onwards to device 2; in the final step, device 2 sends just $$D$$ on to device 3. The total number of parameters transferred in this case is $$(\text{size of A/B/C/D}) * (3 + 2 + 1)$$. The size of A/B/C/D is (in the general case now) $$\frac{N^2}{D^2}$$, and again in the general case the $$(3 + 2 + 1)$$ term becomes $$((D-1) + (D-2) + … + 1)$$, or $$\frac{(D)(D-1)}{2}$$. So the total number of bytes transferred across a single ICI link is $$\frac{N^2(D-1)}{D \times 2}$$.
-
-**Answer:** $$\frac{N^2}{2}(1-\frac{1}{D})$$, or simply $$\frac{N^2}{2}$$ when $$D >> 1$$.
-
-(3) **Solution:** The factor is simply $$\frac{1}{2}$$, i.e. an AllToAll is half as costly as an all-gather/ReduceScatter on a unidirectional ring topology. Looking over the derivations above, this ultimately came from the fact that in the all-gather case, we are transferring the same sized block each of $$(D-1)$$ times, i.e. we're doing the sum $$ \text{tiny block size} * (D + D + D + … + D)$$, whereas in the AllToAll case, we're doing the sum $$\text{tiny block size} * (D + D-1 + D-2 + … + 1)$$. The factor of two thus essentially comes from the fact that $$1 + 2 + \ldots + n = n(n+1)/2$$.
-
-(4) **Solution**:  The total number of scalars that any one link has to carry now reduces by a factor of 2, since in a bidirectional ring, each "sharded strip" can be sent two ways simultaneously.
-
-(5) **Solution**: In this case, we win a factor of 4 compared to the unidirectional case.  This is easiest to see by considering the fate of each of the size-(N2/D2) blocks in a single sharded strip, say the one which originates on device 0.  Instead of (as in the unidirectional case) sending one of these blocks a distance of D-1, another block a distance D - 2, etc. all the way to 1, we now divide the strip into blocks which move right or left, moving a maximum distance of floor(D/2).  So the corresponding sum now becomes $$D/2 + D/2 - 1 + D/2 - 2 + … = D/2 \cdot (D/2+1)/2$$, or $$D^2/8$$ in the limit of large $$D$$.  Compare this to $$D^2/2$$ in the unidirectional case, and we see that we've won a factor of 4.
-
-(6) **Solution:** In a unidirectional ring, we saw that the AllToAll time was already twice as fast as the all-gather time; this comes from the fact that we don't need to send our full strip to every single device.  Then, when we added bidirectionality, we saw that it was a 4x win for AllToAll, and only a 2x win for all-gathers.  Putting these ratios together, we get our sought after factor of 4.
+1. 先算外积，结果存入 $$O[N, K]: o_{kj} = \sum_i a_{ki} b_{ij}$$。注意重复的下标并不是要被收缩的那个——我们做的是外积。这里的求和只遍历当前设备上存着的那些 i。比如收缩轴长为 16、共 4 台设备，那么设备 0 上 i 取 {0, 1, 2, 3}；设备 1 上取 {4, 5, 6, 7}；设备 2 上取 {8, 9, 10, 11}；设备 3 上取 {12, 13, 14, 15}。然后对各设备上 $O[N, K]$ 的部分和做 AllReduce，得到完整的 $O[N, K]$。
+2. 第 2 步不做 AllReduce，可以用更便宜的 ReduceScatter，沿哪条轴都行：$[N, K] \\{ U_X \\} \to [N_X, K]$ 或 $[N, K] \\{ U_X \\} \to [N, K_X]$。
+3. 如正文所说，带宽受限时 AllGather 的成本与 ReduceScatter 相同，都由所处理的整个矩阵的大小决定。于是"先收集再乘"的方案按 $NM$ 伸缩（因为我们 AllGather 的是 $A$）；"先乘再 ReduceScatter"的方案按 NK 伸缩（因为 ReduceScatter 的是 $O$）。两个算法的通信成本之比是 `M/K`。
 
 {% enddetails %}
 
-<h3 markdown=1 class="next-section">That's it for Part 3! For Part 4 (about Transformer math), click [here](../transformers)!</h3>
+**问题 10：AllToAll 里的乐趣：** 上面的表里提到，带宽受限时 AllToAll 的时间比 AllGather 或 ReduceScatter 低 4 倍。这道题带你找出这个 4 倍从哪来，并看看如果 ICI 链路只有单向（而非双向），这个倍数会怎么变。
+
+1. 先看单向的情形。设想 *D* 台设备连成一个环，要对 $N \times N$ 矩阵 $A[I_X, J]$ 做 AllGather 或 ReduceScatter（设 $D$ 整除 $N$）。描述这两个集合通信涉及的通信过程，算出整个算法中流经**单条** ICI 链路的标量（浮点数或整数）总数。
+2. 再看 AllToAll，仍然假设 ICI 单向。这个算法和 AllGather 有什么不同？算出流经单条 ICI 链路的标量数。
+3. 你会发现第 (1) 问和第 (2) 问的答案之比是个很整齐的数。用简单的话解释这个倍数从哪来。
+4. 现在加入双向通信。这对 AllGather 的总时间有什么影响？
+5. 双向通信对 AllToAll 的总时间又有什么影响？
+6. 最后，用一句话解释双向环上 AllGather 与 AllToAll 的时间之比。
+
+{% details 点此查看答案。 %}
+
+(1) **解答：** 过程很简单：算法的每一步，每台设备把矩阵的一个分片"条带"（大小 $$\frac{N}{D} \times N$$ 个元素）发给自己的邻居。这样的步骤要进行 $$D-1$$ 次，因为每个分片都要传给除原产地以外的所有设备。总计每台设备转发 $$\frac{N^2(D-1)}{D}$$ 个标量，也就是单条 ICI 链路上流过这么多。
+
+**答案：** $$N^2 (1-\frac{1}{D})$$；当 $$D >> 1$$ 时约等于 $$N^2$$。
+
+(2) **解答：** 从通信的角度看，AllToAll 与 AllGather 的关键区别是：AllToAll 中，某台设备上存的那个分片，*不需要*把它的全部内容都发给其他每台设备。设想某台设备（叫它设备 0）存的分片是 $$[A, B, C, D]$$（这里 A,B,C,D 是矩阵，我们拿 4 台设备的环来打比方）。矩阵 $$A$$ 哪儿都不用去；$$B$$ 要去设备 1；$$C$$ 要去设备 2；$$D$$ 要去设备 3。于是第一步把 $$B$$、$$C$$、$$D$$ 发给设备 1；下一步设备 1 把 $$C$$、$$D$$ 继续转给设备 2；最后设备 2 把 $$D$$ 转给设备 3。总共传的参数个数是 $$(\text{A/B/C/D 的大小}) * (3 + 2 + 1)$$。A/B/C/D 的大小（这次回到一般情形）是 $$\frac{N^2}{D^2}$$，而 $$(3 + 2 + 1)$$ 一般化为 $$((D-1) + (D-2) + … + 1)$$，即 $$\frac{(D)(D-1)}{2}$$。于是单条 ICI 链路上流过的字节总数是 $$\frac{N^2(D-1)}{D \times 2}$$。
+
+**答案：** $$\frac{N^2}{2}(1-\frac{1}{D})$$；当 $$D >> 1$$ 时约等于 $$\frac{N^2}{2}$$。
+
+(3) **解答：** 这个倍数就是 $$\frac{1}{2}$$：单向环上，AllToAll 的代价是 AllGather/ReduceScatter 的一半。回看上面的推导，根源在于：AllGather 是"同样大小的一块乘 $$(D-1)$$ 次"，即 $$ \text{小块大小} * (D + D + D + … + D)$$；而 AllToAll 是 $$\text{小块大小} * (D + D-1 + D-2 + … + 1)$$。这个 2 倍差别说到底来自 $$1 + 2 + \ldots + n = n(n+1)/2$$ 这个求和公式。
+
+(4) **解答**：双向环里，每条链路要承载的标量总数少了一半——每个"分片条带"现在可以同时往两个方向送。
+
+(5) **解答**：这种情况下，相比单向我们一共赚了 4 倍。最容易的理解方式：看单个分片条带里那些大小 (N²/D²) 的块最终的去处，比如从设备 0 出发的那一条。单向时，一个块走 D-1 的距离、另一个走 D-2，一路排到 1；双向时，把条带拆成向左走和向右走的块，最远距离只有 floor(D/2)。对应的求和变成 $$D/2 + D/2 - 1 + D/2 - 2 + … = D/2 \cdot (D/2+1)/2$$，大 $$D$$ 极限下是 $$D^2/8$$。对比单向情形的 $$D^2/2$$，正好是 4 倍。
+
+(6) **解答：** 单向环上我们已经看到 AllToAll 本来就比 AllGather 快 2 倍——因为我们不需要把整个条带发给每台设备。加上双向之后，我们看到 AllToAll 赚 4 倍、AllGather 只赚 2 倍。把这两个比值合起来，就得到了我们要的 4 倍。
+
+{% enddetails %}
+
+<h3 markdown=1 class="next-section">第 3 部分到此结束！第 4 部分讲 Transformer 的数学，[点击这里](../transformers)。</h3>
