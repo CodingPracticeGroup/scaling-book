@@ -113,7 +113,7 @@ $$
 - 一次点积 $$x \cdot y$$ 需要 $$P$$ 次*加法和乘法*，一共 $$2P$$ 次浮点运算。
 - 矩阵-向量乘 $$Ax$$ 相当于沿 $$A$$ 的每一行做一次点积，共 $$N$$ 行，所以要 $$2NP$$ FLOPs。
 - 矩阵-矩阵乘 $$AB$$ 相当于对 $$B$$ 的每一列做一次矩阵-向量乘，共 $$M$$ 列，总计 $$2NPM$$ FLOPs。
-- 一般地，如果我们有两个更高维的数组 $$C$$ 和 $$D$$，其中一些维度是<span style="color:red">收缩维（CONTRACTING）</span>、一些是<span style="color:blue">批量维（BATCHING）</span>（例如 $$C[\blue{GH}IJ\red{KL}], D[\blue{GH}MN\red{KL}]$$），那么这次收缩的 FLOPs 代价就是"两倍 × 所有维度的乘积"，其中 $$C$$ 和 $$D$$ 的每个维度都出现一次，只是批量维和收缩维只数一遍（例如 $$2\blue{GH}IJMN\red{KL}$$）。注意：只有同时出现在两个乘数里的维度才算批量维。（还要记住：如果根本没有收缩维、这只是一次逐元素相乘，那个因子 2 是不存在的。）<d-footnote><b>收缩（Contracting）维</b>是运算中真正做求和的那条轴（两个输入里都有它，输出里没有），就像矩阵乘法里的那个内部维度。<b>批量（Batching）维</b>是同时出现在两个输入里、并原封不动带进输出的共享轴；它们代表互相独立的小问题，在数 FLOPs 时不参与相乘。用 einsum 的话说：同时出现在两个输入和输出里的标签是批量维；出现在两个输入里但输出里没有的标签是收缩维。</d-footnote>
+- 一般地，如果我们有两个更高维的数组 $$C$$ 和 $$D$$，其中一些维度是<span style="color:red">收缩维（CONTRACTING）</span>、一些是<span style="color:blue">批量维（BATCHING）</span>（例如 $$C[\blue{GH}IJ\red{KL}], D[\blue{GH}MN\red{KL}]$$），那么这次收缩的 FLOPs 代价就是“两倍 × 所有维度的乘积”，其中 $$C$$ 和 $$D$$ 的每个维度都出现一次，只是批量维和收缩维只数一遍（例如 $$2\blue{GH}IJMN\red{KL}$$）。注意：只有同时出现在两个乘数里的维度才算批量维。（还要记住：如果根本没有收缩维、这只是一次逐元素相乘，那个因子 2 是不存在的。）<d-footnote><b>收缩（Contracting）维</b>是运算中真正做求和的那条轴（两个输入里都有它，输出里没有），就像矩阵乘法里的那个内部维度。<b>批量（Batching）维</b>是同时出现在两个输入里、并原封不动带进输出的共享轴；它们代表互相独立的小问题，在数 FLOPs 时不参与相乘。用 einsum 的话说：同时出现在两个输入和输出里的标签是批量维；出现在两个输入里但输出里没有的标签是收缩维。</d-footnote>
 
 $$
 \begin{array}{ccc}
@@ -130,7 +130,7 @@ AB         & 2NPM & NP + PM \\
 \end{array}
 $$
 
-请记住这个事实：矩阵乘法里，*计算量*按三次方增长 $$O(N^3)$$，而数据搬运只按二次方增长 $$O(N^2)$$——这意味着矩阵乘得越大，反而越*容易*跑到"算力吃满"的上限。这一点极其罕见，也在很大程度上解释了为什么我们偏爱以矩阵乘法为主的架构——它们天生适合放大！
+请记住这个事实：矩阵乘法里，*计算量*按三次方增长 $$O(N^3)$$，而数据搬运只按二次方增长 $$O(N^2)$$——这意味着矩阵乘得越大，反而越*容易*跑到“算力吃满”的上限。这一点极其罕见，也在很大程度上解释了为什么我们偏爱以矩阵乘法为主的架构——它们天生适合放大！
 
 {% include figure.liquid path="assets/img/matmul-flops.gif" class="img-fluid" %}
 
@@ -158,11 +158,11 @@ Transformer 是未来。好吧，至少是现在。几年前它或许还只是�
 
 {% include figure.liquid path="assets/img/transformer-diagram.png" class="img-fluid" caption="<b>图：</b>这张图展示标准 Transformer 的一层，从上往下流动。我们用单字母记号来描述 Transformer 里数组的形状和摆法，收缩维仍标红色，批量维标蓝色。每个运算的输入形状标在左上角，参数形状标在右上角，结果形状写在下面。例如：BTD 是门控 einsum 的输入形状，DF 是权重形状。" %}
 
-**注 1 [门控 einsum]**：上图用了一个"[门控 einsum（gating einsum）](https://arxiv.org/abs/2002.05202)"<d-cite key="glu"></d-cite>：把上投影矩阵拆成两个矩阵（上图的 $W_\text{In1}$ 和 $W_\text{In2}$），它们的输出逐元素相乘，起到一种"门控函数"的作用。并非所有 LLM 都这样，所以你会看到有的模型只有一个 $W_\text{In}$ 矩阵，MLP 参数量合计是 2DF 而不是 3DF。那种情况下，D 和 F 通常会被放大，让参数量和"三个矩阵"的版本保持一致。话虽如此，LLaMA、DeepSeek 和许多模型都用了某种形式的门控 einsum。
+**注 1 [门控 einsum]**：上图用了一个“[门控 einsum（gating einsum）](https://arxiv.org/abs/2002.05202)”<d-cite key="glu"></d-cite>：把上投影矩阵拆成两个矩阵（上图的 $W_\text{In1}$ 和 $W_\text{In2}$），它们的输出逐元素相乘，起到一种“门控函数”的作用。并非所有 LLM 都这样，所以你会看到有的模型只有一个 $W_\text{In}$ 矩阵，MLP 参数量合计是 2DF 而不是 3DF。那种情况下，D 和 F 通常会被放大，让参数量和“三个矩阵”的版本保持一致。话虽如此，LLaMA、DeepSeek 和许多模型都用了某种形式的门控 einsum。
 
 **注 2 [MHA 注意力]**：自注意力中 T 和 S 相等；交叉注意力中两者可能不同。在标准的多头注意力（MHA）里，N 和 K 相等；而[多查询注意力（Multi-Query Attention）](https://arxiv.org/abs/1911.02150)（MQA）<d-cite key="mqa"></d-cite> 里 K=1；[分组 MQA（Grouped MQA）](https://arxiv.org/abs/2305.13245)（GMQA）<d-cite key="gmqa"></d-cite> 只要求 K 整除 N。
 
-**注 3 [pre-norm 与 post-norm]：** 上图展示的是所谓"pre-norm"架构：归一化在残差连接之前发生，通常写成 `x + attn(norm(x))`。LLaMA-3 等现代模型都这样。最初的 Transformer 论文用的是"post-norm"：layernorm 在残差连接之后，即 `norm(x + attn(x))`。
+**注 3 [pre-norm 与 post-norm]：** 上图展示的是所谓“pre-norm”架构：归一化在残差连接之前发生，通常写成 `x + attn(norm(x))`。LLaMA-3 等现代模型都这样。最初的 Transformer 论文用的是“post-norm”：layernorm 在残差连接之后，即 `norm(x + attn(x))`。
 
 ## 整体的 FLOPs 与参数量计算
 
@@ -221,7 +221,7 @@ $$
 
 ### 其他操作
 
-Transformer 里还有一些别的运算。LayerNorm 相比之下非常便宜，做粗略估算时可以忽略。注意每层通常有两个（注意力前一个、MLP 前一个）。此外最后还有一次很大的"反嵌入"（unembedding）矩阵乘——它很大，但不是每层都有。
+Transformer 里还有一些别的运算。LayerNorm 相比之下非常便宜，做粗略估算时可以忽略。注意每层通常有两个（注意力前一个、MLP 前一个）。此外最后还有一次很大的“反嵌入”（unembedding）矩阵乘——它很大，但不是每层都有。
 
 $$
 \begin{array}{ccc}
@@ -260,11 +260,11 @@ $$\small{\frac{\textrm{attention FLOPs}}{\textrm{matmul FLOPs}} = \frac{12BT^2NH
 
 {% include figure.liquid path="assets/img/moe.png" class="img-fluid img-small" caption="<b>图：</b>一个含 $n$ 个专家的 MoE 层示例。门控专家把每个 token 路由给其中 $k$ 个专家，这 $k$ 个 MLP 的输出相加得到结果。我们的参数量是 $n$ 乘上单个专家的大小，但每个 token 只用到其中 $k$ 个。<a href=\"https://deepgram.com/learn/mixture-of-experts-ml-model-guide\">来源</a>。" %}
 
-与稠密模型相比，MoE 引入了新的通信，主要是两次 AllToAll（一次在 MoE 块前、一次在后）：把 token 送到正确的专家那里，再送回它们的"老家"设备。<d-footnote>严格说，只有当数据或序列维的分片和专家的分片在同一条轴上时才会这样。</d-footnote>不过如上一节所见，每次 AllToAll 只有同一条轴上 AllGather 代价的 1/4（双向环）。
+与稠密模型相比，MoE 引入了新的通信，主要是两次 AllToAll（一次在 MoE 块前、一次在后）：把 token 送到正确的专家那里，再送回它们的“老家”设备。<d-footnote>严格说，只有当数据或序列维的分片和专家的分片在同一条轴上时才会这样。</d-footnote>不过如上一节所见，每次 AllToAll 只有同一条轴上 AllGather 代价的 1/4（双向环）。
 
 ### 梯度检查点
 
-反向传播这个算法，本质是拿计算换内存。反向传播不需要 $$O(n_\text{layers}^2)$$ 的 FLOPs，**却需要 $$O(n_\text{layers})$$ 的内存**——要把前向传播产生的所有中间激活都存下来。这虽然比"二次方的计算"好，但内存贵得吓人：一个 $$B * T=4M$$（每批总共 4M 个 token）、L=64、D=8192 的模型，哪怕把反向传播中一切不必要的计算都省掉，也要存下约 $$2 * 20 * B * T * D * L = 84TB$$ 的 bfloat16 激活。这个 20，是把上面 Transformer 示意图里每个中间节点大致都数了一遍，因为比如
+反向传播这个算法，本质是拿计算换内存。反向传播不需要 $$O(n_\text{layers}^2)$$ 的 FLOPs，**却需要 $$O(n_\text{layers})$$ 的内存**——要把前向传播产生的所有中间激活都存下来。这虽然比“二次方的计算”好，但内存贵得吓人：一个 $$B * T=4M$$（每批总共 4M 个 token）、L=64、D=8192 的模型，哪怕把反向传播中一切不必要的计算都省掉，也要存下约 $$2 * 20 * B * T * D * L = 84TB$$ 的 bfloat16 激活。这个 20，是把上面 Transformer 示意图里每个中间节点大致都数了一遍，因为比如
 
 $$f(x) = \exp(g(x))$$
 
@@ -330,7 +330,7 @@ $$ -->
 
 {% details 点此查看答案。 %}
 
-这个运算的总"理论"FLOPs 是 $$2 \cdot B \cdot D \cdot F$$。但因为计算没有沿 Z 维分片，我们实际上多做了 Z 倍的 FLOPs，总共是 $$2 \cdot B \cdot D \cdot F \cdot Z$$。又因为计算沿其余维度是分片的，每台设备上的量约为 $$2 \cdot B \cdot D \cdot F / (X \cdot  Y)$$。
+这个运算的总“理论”FLOPs 是 $$2 \cdot B \cdot D \cdot F$$。但因为计算没有沿 Z 维分片，我们实际上多做了 Z 倍的 FLOPs，总共是 $$2 \cdot B \cdot D \cdot F \cdot Z$$。又因为计算沿其余维度是分片的，每台设备上的量约为 $$2 \cdot B \cdot D \cdot F / (X \cdot  Y)$$。
 
 {% enddetails %}
 
@@ -338,7 +338,7 @@ $$ -->
 
 {% details 点此查看答案。 %}
 
-按上面的法则，I 和 J 是收缩维，K、L、M、N、O 是非收缩维。没有"批量维"，所以就是 $$2 \cdot I \cdot J \cdot K \cdot L \cdot M \cdot N \cdot O$$——所有轴的乘积。若有共享轴，它只数一遍。
+按上面的法则，I 和 J 是收缩维，K、L、M、N、O 是非收缩维。没有“批量维”，所以就是 $$2 \cdot I \cdot J \cdot K \cdot L \cdot M \cdot N \cdot O$$——所有轴的乘积。若有共享轴，它只数一遍。
 
 {% enddetails %}
 
@@ -368,7 +368,7 @@ $$\text{U[B, T, S, K, G]} \cdot \text{V[B, S, K, H]} \rightarrow \text{X[B, T, K
 
 {% enddetails %}
 
-**问题 6：** 假设前向传播时，我们只保存 Transformer 层里 7 个主要矩阵乘的输出（Q、K、V、O 加三个 FFW 矩阵）。反向传播时要"重新算出来"多少额外 FLOPs？
+**问题 6：** 假设前向传播时，我们只保存 Transformer 层里 7 个主要矩阵乘的输出（Q、K、V、O 加三个 FFW 矩阵）。反向传播时要“重新算出来”多少额外 FLOPs？
 
 {% details 点此查看答案。 %}
 

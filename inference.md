@@ -115,7 +115,7 @@ Transformer 训练好了，你想拿它生成一些新序列。_说到底，跑�
 
 {% include figure.liquid path="assets/img/cached-inference.png" class="img-fluid" caption="<b>图：</b>带 KV 缓存的高效 Transformer 采样。<b style=\"color: red;\">预填充</b>处理整段提示，把每个 token 的键值激活存进缓存。<b style=\"color: blue;\">生成</b>拿着缓存（和最后一个 token 的 logits）采样新 token，把新 token 送过模型、去关注 KV 缓存，再把它自己的键值投影存回缓存。MLP 块部分的复杂度因此是 $O(n)$ 的。" %}
 
-有了 KV 缓存，生成 $n$ 个 token 的复杂度降到了：FFW 部分 $$O(n)$$、注意力部分 $$O(n^2)$$——旧 token 再不用重算。但生成一段序列仍需要很多次前向——你在 Gemini 或 ChatGPT 上看到回答逐字"流"出来，就是这个在发生：每个 token（通常）都是一次独立的（只是部分复用了缓存）巨型模型调用。
+有了 KV 缓存，生成 $n$ 个 token 的复杂度降到了：FFW 部分 $$O(n)$$、注意力部分 $$O(n^2)$$——旧 token 再不用重算。但生成一段序列仍需要很多次前向——你在 Gemini 或 ChatGPT 上看到回答逐字“流”出来，就是这个在发生：每个 token（通常）都是一次独立的（只是部分复用了缓存）巨型模型调用。
 
 我们马上会看到，<b style="color: red;">预填充</b>和<b style="color: blue;">生成</b>是两种完全不同的动物——Transformer 推理其实是伪装成一件事的两件事！和训练相比，KV 缓存还是一个全新的、重量级的复杂度来源。
 
@@ -131,7 +131,7 @@ Transformer 训练好了，你想拿它生成一些新序列。_说到底，跑�
 
 ### 更细粒度地看 Transformer
 
-到目前为止，我们基本把 Transformer 当成一摞前馈块。从 FLOPs 和内存角度看这常常没问题，但要认真给推理建模就不够了。<d-footnote>你会在整个这一节里注意到：推理比训练"好欺负"得多——FLOPs 少得多、批量化的机会少得多、对延迟敏感得多，KV 缓存更是让事情复杂了一大截。</d-footnote>如[第 4 部分](../transformers)所见，前向的主要组成部分是：
+到目前为止，我们基本把 Transformer 当成一摞前馈块。从 FLOPs 和内存角度看这常常没问题，但要认真给推理建模就不够了。<d-footnote>你会在整个这一节里注意到：推理比训练“好欺负”得多——FLOPs 少得多、批量化的机会少得多、对延迟敏感得多，KV 缓存更是让事情复杂了一大截。</d-footnote>如[第 4 部分](../transformers)所见，前向的主要组成部分是：
 
 1. **注意力投影**。也就是 $W_Q$、$W_K$、$W_V$、$W_O$ 这四个。它们都是同一类活：从 HBM 读参数和一批激活，做点 FLOPs，把结果写回 HBM。
 2. **点积注意力**。从 HBM 读一批键值投影和一批查询激活，做几个内积、一些 softmax，再把注意力结果写回 HBM。
@@ -204,7 +204,7 @@ $$S \gg T = 1 \implies \frac{ST}{S+T} \approx 1$$
 
 ### LLM 延迟与吞吐的理论估算
 
-从这些公式，我们可以为"每步时间优化该奔着什么目标"给出很好的界。**（如果整章只让读者记住一样东西，就是下面这两条。）** 生成阶段的小批（最常见的情形）下，假设注意力和 MLP 块都是内存带宽受限，每步延迟有个下界：
+从这些公式，我们可以为“每步时间优化该奔着什么目标”给出很好的界。**（如果整章只让读者记住一样东西，就是下面这两条。）** 生成阶段的小批（最常见的情形）下，假设注意力和 MLP 块都是内存带宽受限，每步延迟有个下界：
 
 $$\begin{equation*}
 \text{Theoretical Min Step Time} = \frac{\text{Batch Size} \times \text{KV Cache Size} + \text{Parameter Size}}{\text{Total Memory Bandwidth}}
@@ -222,7 +222,7 @@ $$\begin{align}
 \tiny \text{Theoretical Step Time (General)} = \underbrace{\frac{\text{Batch Size} \times \text{KV Cache Size}}{\tiny \text{Total Memory Bandwidth}}}_{\text{Attention (always bandwidth-bound)}} + \underbrace{\max\left(\frac{2 \times \text{Batch Size} \times \text{Parameter Count}}{\text{Total FLOPs/s}}, \frac{\text{Parameter Size}}{\text{Total Memory Bandwidth}}\right)}_{\tiny \text{MLP (can be compute-bound)}}
 \end{align}$$
 
-其中注意力部分（左边）永远不会计算受限，所以不需要 FLOPs 屋顶线。这些式子做"拍脑袋估算"非常好用，例如：
+其中注意力部分（左边）永远不会计算受限，所以不需要 FLOPs 屋顶线。这些式子做“拍脑袋估算”非常好用，例如：
 
 <b markdown=1 style="color: #57cf57;">小测验：</b>假设要在 TPU v5e 4x4 切片上，对一个 30B 参数的稠密模型做批大小为 4 token 的生成步：int8 参数、bf16 计算、上下文 8192、每 token 的 KV 缓存 100 kB。这个操作的延迟合理下界是多少？如果想一次采样 256 个 token 呢？
 
@@ -236,7 +236,7 @@ $$\begin{align}
 
 {% include figure.liquid path="assets/img/latency-cost.png" class="img-fluid" caption="<b>图：</b>若干 PaLM 模型的成本（读作吞吐）对延迟的帕累托前沿。注意芯片数（C）和批大小（B）如何带着你沿前沿移动。唯一的例外是绿点（PaLM 540B，C:32 B:16）：内存不够，撑不起像样的批大小，吞吐受了拖累。注意吞吐一般在批大小 240 之后趋于平缓。int8 权重能带来更好的延迟-吞吐帕累托点，但换不来更高的吞吐上限。" %}
 
-我们不仅拿批大小当"延迟-吞吐"的旋钮；当被 HBM 容量限制时，还可能宁可换更大的拓扑，好装下更大的批。[下一节](../applied-inference)会展开这一点。
+我们不仅拿批大小当“延迟-吞吐”的旋钮；当被 HBM 容量限制时，还可能宁可换更大的拓扑，好装下更大的批。[下一节](../applied-inference)会展开这一点。
 
 <p markdown=1 class="takeaway">**要点**：想要生成吞吐，就把每芯片批大小拉到尽可能大。只要每芯片批超过 TPU 的算术强度（$B_\text{crit}$，通常是 120 或 240），吞吐就到顶了。为此你可能需要扩大拓扑。较小的批大小则以牺牲吞吐为代价换来更好的延迟。</p>
 
@@ -244,9 +244,9 @@ $$\begin{align}
 
 以上都很理论。实践中往往看不到一条锋利的屋顶线，原因有几条：
 
-* "HBM 读取能和 FLOPs 完美重叠"的假设不现实，因为编译器（XLA）是会犯错的。
+* “HBM 读取能和 FLOPs 完美重叠”的假设不现实，因为编译器（XLA）是会犯错的。
 * 对分片模型，XLA 也常常没能把模型分片矩阵乘的 ICI 通信和计算高效重叠，所以线性部分往往从 $$\text{BS}=32$$ 开始就开始吃延迟的亏。
-* 超过理论屋顶线的批大小仍能靠"重叠得不完美"捡回一点吞吐——但上面的界仍是好启发式。
+* 超过理论屋顶线的批大小仍能靠“重叠得不完美”捡回一点吞吐——但上面的界仍是好启发式。
 
 {% enddetails %}
 
@@ -290,7 +290,7 @@ $$8192\ (T) \times 40\ (K) \times 128\ (H) \times 40\ (L) \times 2\ (\text{bytes
 
 ### 给 LLaMA 2-13B 算一笔吞吐和延迟的账
 
-来看：在 8 块 TPU v5e 上，以不同批大小做"完全高效"的生成，一直加到我们之前推出的临界批大小 240（理论最大吞吐的位置）。
+来看：在 8 块 TPU v5e 上，以不同批大小做“完全高效”的生成，一直加到我们之前推出的临界批大小 240（理论最大吞吐的位置）。
 
 | 批大小                            |      1 |      8 |     16 |     32 |     64 |    240 |
 | :-------------------------------- | -----: | -----: | -----: | -----: | -----: | -----: |
@@ -337,7 +337,7 @@ KV 缓存变小后，回报依然递减，但每芯片理论吞吐能一路涨�
 
 **用不规则（ragged）HBM 读取和 Paged Attention：** 上面的计算里每个 KV 缓存都按 8k 上下文预留，但实际常常不需要把整段 KV 缓存从内存读出来——请求的长度分布很宽，很少用满模型的最大上下文，所以可以实现只读非 padding 部分的内核（比如各种 Flash Attention 变体）。
 
-Paged Attention<d-cite key="paged"></d-cite>是它的升级：把 KV 缓存按操作系统页表那样分页存放，基本完全免去 padding。这增加了不少复杂度，但每个批只占它真正需要的内存。这是运行时优化，对模型架构是"无感"的。
+Paged Attention<d-cite key="paged"></d-cite>是它的升级：把 KV 缓存按操作系统页表那样分页存放，基本完全免去 padding。这增加了不少复杂度，但每个批只占它真正需要的内存。这是运行时优化，对模型架构是“无感”的。
 
 {% include figure.liquid path="assets/img/paged-attention.png" class="img-fluid img-small" caption="<b>图：</b>生成时，一个 token（\"forth\"）要关注多个 KV 缓存块/页。把 KV 缓存分页后，我们不再多读、多存任何不需要的内存。取自 <a href=\"https://arxiv.org/pdf/2309.06180\">PagedAttention 论文</a>。" %}
 
@@ -345,7 +345,7 @@ Paged Attention<d-cite key="paged"></d-cite>是它的升级：把 KV 缓存按�
 
 ## 把推理铺到多块加速器上
 
-前面我们把"如何扩展到多块芯片"糊弄过去了。按照[第 5 部分](../training)的路子，我们来梳理可用的各种策略和取舍。照例，预填充和生成分开看。
+前面我们把“如何扩展到多块芯片”糊弄过去了。按照[第 5 部分](../training)的路子，我们来梳理可用的各种策略和取舍。照例，预填充和生成分开看。
 
 ### 预填充
 
@@ -362,7 +362,7 @@ Paged Attention<d-cite key="paged"></d-cite>是它的升级：把 KV 缓存按�
 
 生成比预填充难伺候得多。一来，想要大批就得凑许多请求，不容易；二来延迟指标更苛刻。这两点合起来，意味着我们更常处于内存受限状态、对通信开销也更敏感，可选的分片策略因此很受限：
 
-1. **FSDP 不可能：** 我们本来就卡在"把参数和 KV 从 HBM 搬进 MXU"的内存带宽上，绝不想再通过比 HBM 慢好几个数量级的 ICI 搬它们。*要搬的是激活，不是权重。*所以 FSDP 那一路在生成阶段通常完全不可行<d-footnote>训练完忘了把 FSDP 关掉，是性能莫名掉一个数量级最常见的原因之一。</d-footnote>
+1. **FSDP 不可能：** 我们本来就卡在“把参数和 KV 从 HBM 搬进 MXU”的内存带宽上，绝不想再通过比 HBM 慢好几个数量级的 ICI 搬它们。*要搬的是激活，不是权重。*所以 FSDP 那一路在生成阶段通常完全不可行<d-footnote>训练完忘了把 FSDP 关掉，是性能莫名掉一个数量级最常见的原因之一。</d-footnote>
 
 2. **没有任何理由做数据并行：** 纯数据并行复制参数，也不会让参数读得更快，没有用处。与其这样，不如多开几份模型副本。<d-footnote>这里说的是多开几台各自持有完整模型副本、批更小的服务器。在模型层面做数据并行严格更差。</d-footnote>
 
@@ -370,7 +370,7 @@ Paged Attention<d-cite key="paged"></d-cite>是它的升级：把 KV 缓存按�
 
 _稠密模型的生成，剩下的选项基本就是模型分片的各种变体_。和预填充一样，最简单的是朴素的模型并行（激活完全复制，MLP 权重沿隐层维完全分片），做到 4-8 路就会撞上 ICI 界限。不过，由于我们经常是内存带宽受限的，其实可以越过这条界限继续加模型分片来改善延迟！
 
-**关于生成阶段 ICI 界限的说明：** 训练要计算受限，所以屋顶线看的是"ICI 通信何时超过 FLOPs"。可生成阶段若卡在参数搬运的内存带宽上，我们可以把模型分片做得更多——用极小的吞吐代价（按每芯片 tokens/s 算）换更好的延迟。模型多分几片，就多几块 HBM 可以并行搬权重，反正 FLOPs 根本不是瓶颈<d-footnote>意思是：既然 FLOPs 时间卡不住我们，要担心的就只剩"ICI 时间超过参数搬运时间"这一件事。</d-footnote>来看看在 ICI 成为瓶颈之前，模型并行最多能做到多少。
+**关于生成阶段 ICI 界限的说明：** 训练要计算受限，所以屋顶线看的是“ICI 通信何时超过 FLOPs”。可生成阶段若卡在参数搬运的内存带宽上，我们可以把模型分片做得更多——用极小的吞吐代价（按每芯片 tokens/s 算）换更好的延迟。模型多分几片，就多几块 HBM 可以并行搬权重，反正 FLOPs 根本不是瓶颈<d-footnote>意思是：既然 FLOPs 时间卡不住我们，要担心的就只剩“ICI 时间超过参数搬运时间”这一件事。</d-footnote>来看看在 ICI 成为瓶颈之前，模型并行最多能做到多少。
 
 $$\begin{align*}T_\text{HBM comms} = \frac{2DF}{Y \cdot W_\text{hbm}} && T_\text{ICI comms} = \frac{2BD}{W_\text{ici}}\end{align*}$$
 
@@ -419,7 +419,7 @@ $$T_\text{ICI comms} > T_\text{HBM comms} \rightarrow \frac{W_\text{hbm}}{W_\tex
 
 ## 设计一台高效的推理引擎
 
-到目前为止，我们讨论的都是如何单独地把一次预填充/生成做好。要真正用好它们，需要设计一台推理引擎，把这两路操作喂到我们选定的"延迟/吞吐帕累托前沿"上的那一点。
+到目前为止，我们讨论的都是如何单独地把一次预填充/生成做好。要真正用好它们，需要设计一台推理引擎，把这两路操作喂到我们选定的“延迟/吞吐帕累托前沿”上的那一点。
 
 最省事的办法是先跑一批预填充、再跑一批生成：
 
@@ -438,7 +438,7 @@ $$T_\text{ICI comms} > T_\text{HBM comms} \rightarrow \frac{W_\text{hbm}}{W_\tex
 
 {% include figure.liquid path="assets/img/interleaving.png" class="img-fluid" %}
 
-这既躲开了批量预填充拖长的 TTFT，又保住了生成吞吐。我们叫它**交替式（interleaved）**配置，因为预填充步和生成步是"交替"排布的。对以吞吐为王的批量生成任务（比如跑评测），这非常强：调度器一发现生成位有空缺就立刻插队做预填充，哪怕生成批很大也能保持高利用率。而且预填充不再需要 pad 到最大长度——反正不和别的需求凑一批。
+这既躲开了批量预填充拖长的 TTFT，又保住了生成吞吐。我们叫它**交替式（interleaved）**配置，因为预填充步和生成步是“交替”排布的。对以吞吐为王的批量生成任务（比如跑评测），这非常强：调度器一发现生成位有空缺就立刻插队做预填充，哪怕生成批很大也能保持高利用率。而且预填充不再需要 pad 到最大长度——反正不和别的需求凑一批。
 
 主要缺点是：服务器一旦开始做预填充，其他所有请求的生成就得停一停——所有计算资源都被那次预填充占走了。正在解码的用户 A 会被正在预填充的用户 B 堵住。TTFT 是好看了，但大家的出字会一顿一顿、平均更慢，对很多应用来说用户体验不好——别人的预填充跑在了我这次请求的延迟关键路径上。
 
@@ -452,7 +452,7 @@ $$T_\text{ICI comms} > T_\text{HBM comms} \rightarrow \frac{W_\text{hbm}}{W_\tex
 
 2. **各司其职：**预填充和生成在延迟上的最优参数切分/硬件拓扑常常差别很大（比如模型并行对生成有用、对预填充没用）。强迫两者共用一套切分，两边性能都受损；而维护两份权重又费内存。另外，预填充独占服务器后，除了手头正在处理的那条，它不需要保存任何 KV 缓存——省出大量内存用于历史缓存（见下一节）或继续优化预填充延迟。
 
-一个坏处是 KV 缓存现在要过一遍网络。这通常可以接受，但也再次构成了"把 KV 缓存做小"的动力。
+一个坏处是 KV 缓存现在要过一遍网络。这通常可以接受，但也再次构成了“把 KV 缓存做小”的动力。
 
 <p markdown=1 class="takeaway">**要点**：对延迟敏感、又要高吞吐的服务，我们通常必须把预填充和生成拆到两组服务器：预填充按批 1 跑，生成把许多并发请求凑在一起跑。</p>
 
@@ -484,7 +484,7 @@ $$T_\text{ICI comms} > T_\text{HBM comms} \rightarrow \frac{W_\text{hbm}}{W_\tex
 
 ### 看一个真实实现：JetStream
 
-Google 开源了一个实现了这套逻辑的库，叫 [JetStream](https://github.com/google/JetStream)。服务器有一组"预填充引擎"和"生成引擎"，通常在不同的 TPU 切片上，由一个总控（controller）统一编排。预填充在"[prefill thread](https://github.com/AI-Hypercomputer/JetStream/blob/c0f83127c16d7861cacc560303a28404c6cbb24c/jetstream/core/orchestrator.py#L499)"里跑，生成在"[generate thread](https://github.com/AI-Hypercomputer/JetStream/blob/c0f83127c16d7861cacc560303a28404c6cbb24c/jetstream/core/orchestrator.py#L629)"里跑，还有一条"[transfer thread](https://github.com/AI-Hypercomputer/JetStream/blob/c0f83127c16d7861cacc560303a28404c6cbb24c/jetstream/core/orchestrator.py#L592)"负责把 KV 缓存从预填充切片搬到生成切片。
+Google 开源了一个实现了这套逻辑的库，叫 [JetStream](https://github.com/google/JetStream)。服务器有一组“预填充引擎”和“生成引擎”，通常在不同的 TPU 切片上，由一个总控（controller）统一编排。预填充在“[prefill thread](https://github.com/AI-Hypercomputer/JetStream/blob/c0f83127c16d7861cacc560303a28404c6cbb24c/jetstream/core/orchestrator.py#L499)”里跑，生成在“[generate thread](https://github.com/AI-Hypercomputer/JetStream/blob/c0f83127c16d7861cacc560303a28404c6cbb24c/jetstream/core/orchestrator.py#L629)”里跑，还有一条“[transfer thread](https://github.com/AI-Hypercomputer/JetStream/blob/c0f83127c16d7861cacc560303a28404c6cbb24c/jetstream/core/orchestrator.py#L592)”负责把 KV 缓存从预填充切片搬到生成切片。
 
 Engine 接口（[实现在这里](https://github.com/google/JetStream/blob/445f1aa8e857d0a09d72618e365daf80723bdf4c/jetstream/engine/engine_api.py#L138)）是任何 LLM 都要提供的一套通用接口，关键方法有：
 
@@ -567,12 +567,12 @@ int8 下每 token 的 KV 缓存是 $2 \cdot L \cdot K \cdot H$，即 `2 * 64 * 8
 
 {% enddetails %}
 
-**问题 6：** 对 MoE 可以做"专家分片"：把专家切到网格的一条轴上。按我们的标准记号，第一个 FFW 权重形状是 `[E, D, F]`，切法是 [E<sub>Z</sub>, D<sub>X</sub>, F<sub>Y</sub>]，其中 `X` 只在训练里用作 FSDP 维。假设在 TPU v5e 上推理：
+**问题 6：** 对 MoE 可以做“专家分片”：把专家切到网格的一条轴上。按我们的标准记号，第一个 FFW 权重形状是 `[E, D, F]`，切法是 [E<sub>Z</sub>, D<sub>X</sub>, F<sub>Y</sub>]，其中 `X` 只在训练里用作 FSDP 维。假设在 TPU v5e 上推理：
 
 1. 上面这个模型在 TPU v5e 8x16 切片、Y=8、Z=16 时的 HBM 权重装载时间是多久？每块 TPU 还剩多少空闲 HBM？
 2. 我们的模型最小能塞进多大的切片？
 
-**问题 7 [二维模型分片]：** 我们来算一算 [ESTI 论文](https://arxiv.org/pdf/2211.05102)所称"二维权重驻留分片（2D weight-stationary sharding）"背后的数学。附录 B 会简略介绍它，但建议先自己做一遍这道题，试试能不能自己推出来。基本思路：把权重同时沿 $D$ 和 $F$ 两轴切开，让每块权重近似正方形。这能减轻通信负担，让我们能多撑一会儿。
+**问题 7 [二维模型分片]：** 我们来算一算 [ESTI 论文](https://arxiv.org/pdf/2211.05102)所称“二维权重驻留分片（2D weight-stationary sharding）”背后的数学。附录 B 会简略介绍它，但建议先自己做一遍这道题，试试能不能自己推出来。基本思路：把权重同时沿 $D$ 和 $F$ 两轴切开，让每块权重近似正方形。这能减轻通信负担，让我们能多撑一会儿。
 
 二维权重驻留的算法：
 
@@ -630,11 +630,11 @@ $$N > 32 \cdot \left(\frac{F}{D}\right) \cdot \left(\frac{3}{4}\right)^2$$
 
 {% include figure.liquid path="assets/img/batch-scaling-throughput.png" class="img-fluid img-small" %}
 
-所以至少在这个模型上，吞吐确实在涨到"每个数据并行分片批 240"之前一直涨。
+所以至少在这个模型上，吞吐确实在涨到“每个数据并行分片批 240”之前一直涨。
 
 ### 附录 B：二维权重驻留分片
 
-拓扑继续变大时，如果能用到高维网格（比如 TPU），还可以用"**二维权重切分**"再改良一次——引入第二条切分轴。我们叫它"**二维权重驻留**"，在 [Efficiently Scaling Transformer Inference 论文](https://arxiv.org/abs/2211.05102)里有更详细的描述。
+拓扑继续变大时，如果能用到高维网格（比如 TPU），还可以用“**二维权重切分**”再改良一次——引入第二条切分轴。我们叫它“**二维权重驻留**”，在 [Efficiently Scaling Transformer Inference 论文](https://arxiv.org/abs/2211.05102)里有更详细的描述。
 
 Megatron 只切隐层 $$F$$ 维：芯片数一大、又是单维切分时，切到每片剩下的部分会远小于 $$E$$（即 $$d_\text{model}$$ 维）。批较大时，在 MLP 第一层算完之后把一部分集合通信挪到隐层维去做，会更划算。
 
@@ -657,9 +657,9 @@ B 很大时，墙钟时间基本不变：加芯片的同时，要搬的数据量
 
 {% include figure.liquid path="assets/img/all-gather.gif" class="img-fluid" %}
 
-延迟优先的推理搬的数据很少，所以激活上的集合通信常常落在延迟项里（小批尤其如此）。很好直观感受延迟：数一数完成一次通信要"跳"过多少跳。
+延迟优先的推理搬的数据很少，所以激活上的集合通信常常落在延迟项里（小批尤其如此）。很好直观感受延迟：数一数完成一次通信要“跳”过多少跳。
 
-在 TPU 上，如果通信里"与张量大小有关"的部分每跳不足 1 微秒（一跳 = 一对相邻设备间的通信），真正卡我们的就是分发这次集合通信本身的固定开销。ICI 单向带宽 `4.5e10`，于是当 $$(\text{bytes} / n_\text{shards}) / 4.5e10 < 1e-6$$ 时通信进入延迟受限。8 路 Megatron 分片下，这就是 `buffer_size < 360kB`。**这个数在推理里真不算小：**`BS=16`、`D=8192` 的 int8 激活才 `16*8192=131kB`——我们已经延迟受限制了。
+在 TPU 上，如果通信里“与张量大小有关”的部分每跳不足 1 微秒（一跳 = 一对相邻设备间的通信），真正卡我们的就是分发这次集合通信本身的固定开销。ICI 单向带宽 `4.5e10`，于是当 $$(\text{bytes} / n_\text{shards}) / 4.5e10 < 1e-6$$ 时通信进入延迟受限。8 路 Megatron 分片下，这就是 `buffer_size < 360kB`。**这个数在推理里真不算小：**`BS=16`、`D=8192` 的 int8 激活才 `16*8192=131kB`——我们已经延迟受限制了。
 
 <p markdown=1 class="takeaway">**要点**：当 $$\text{total bytes} < W_{ICI} \times 1e-6$$ 时，通信进入延迟受限。比如沿 $$Y$$ 做模型并行时，int8 下 $$Y > BD / 45,000$$ 就会被卡住。</p>
 
@@ -679,13 +679,13 @@ B 很大时，墙钟时间基本不变：加芯片的同时，要搬的数据量
 2. 攒够 K 个 token 后，用大模型对已生成的整段算一遍 next-token logits。
 3. 既然是贪心解码，只要检查小模型出的每个 token 是不是该位置上概率最大的那个。若某个错了，就取最长正确前缀、把第一个错的 token 换成正确的，回到 (1)；若全对，就顺手用最后那个 logits 多采样一个 token，再回到 (1)。
 
-**为什么这是延迟上的胜利？**这套做法算下来，每个 token 仍要付出相当于大模型一次前向的 FLOPs——但许多 token 可以凑在一起，一次前向全算完。我们利用了"本来就没到计算受限"这个事实，多给几个 token 打分几乎不花额外时间。
+**为什么这是延迟上的胜利？**这套做法算下来，每个 token 仍要付出相当于大模型一次前向的 FLOPs——但许多 token 可以凑在一起，一次前向全算完。我们利用了“本来就没到计算受限”这个事实，多给几个 token 打分几乎不花额外时间。
 
 平均到每个被接受的 token，FLOPs 其实更贵了（有的会被拒绝，还得跑草稿模型），但硬件里榨出的 FLOPs 更多，而小模型又便宜，总体是赚的。另外多个步共享 KV 缓存的读取，**长上下文下投机解码还能提升吞吐。**由于所有 token 都经过大模型校验，采样分布完全没有改变（非贪心时具体轨迹会不同，但分布不变）。
 
 传统上，投机解码需要一个与目标模型分布接近的小模型，比如 LLaMA-2 70B 配 LLaMA-2 2B——这种模型常常不存在。就算有，接受率低时草稿模型也还是太贵。于是另一种思路是把草稿头嵌进主模型里：比如给靠后的某一层加一个专门的草稿头<d-cite key="eagle"></d-cite><d-cite key="medusa"></d-cite><d-cite key="DeepSeek3"></d-cite>。这种草稿头和主模型共享大部分参数，跑起来更快，分布也更贴合。
 
-普通自回归采样下，每秒 token 数就等于步长的倒数。我们依然逃不出上文"算术强度"一节给出的最小步长。（实际上投机采样的单步往往比常规自回归慢不少——但平均每步能产出多个 token，每秒 token 数反而好得多。）
+普通自回归采样下，每秒 token 数就等于步长的倒数。我们依然逃不出上文“算术强度”一节给出的最小步长。（实际上投机采样的单步往往比常规自回归慢不少——但平均每步能产出多个 token，每秒 token 数反而好得多。）
 
 {% include figure.liquid path="assets/img/spec-sampling3.png" class="img-fluid" caption="<b>图：</b>Chinchilla（DeepMind 的 70B 模型）配 4B 参数草稿模型的每步延迟和草稿接受率。对 XSum（自然语言数据集），最理想的提前量约 3-4 个 token；HumanEval（代码数据集）更可预测，冒进一些的投机还能一直赚。" %}
 

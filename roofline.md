@@ -84,7 +84,7 @@ _styles: >
 
 从一个极简单的问题开始：*为什么某个算法要花 50 毫秒，而不是 50 秒或者 5 毫秒*？模型里到底是哪部分在吃时间、它本该吃多久？
 
-**计算：** 深度学习模型拆开看，就是一大堆矩阵乘法；每个矩阵乘法都由浮点的乘法和加法"操作"（FLOPs）组成。计算器一秒能算多少次，就决定了这一步要跑多久：
+**计算：** 深度学习模型拆开看，就是一大堆矩阵乘法；每个矩阵乘法都由浮点的乘法和加法“操作”（FLOPs）组成。计算器一秒能算多少次，就决定了这一步要跑多久：
 
 $$\begin{equation}
 T_\text{math} = \frac{\text{Computation FLOPs}}{\text{Accelerator FLOPs/s}}
@@ -92,7 +92,7 @@ T_\text{math} = \frac{\text{Computation FLOPs}}{\text{Accelerator FLOPs/s}}
 
 举个例子：一块 NVIDIA H100 一秒能做约 9.89e14 个 bfloat16 FLOPs<d-footnote>bf16 是 <a href="https://en.wikipedia.org/wiki/Bfloat16_floating-point_format">bfloat16</a> 的缩写，一种常用于机器学习的 16 位浮点格式。</d-footnote>，TPU v6e 一秒能做约 9.1e14 个。<d-footnote>H100 和 B200 通常只能达到标称峰值 FLOPs 的约 80-85%，而 TPU 在正常使用下能接近 95%。</d-footnote> 也就是说，做 `1e12` 个 FLOPs，在 H100 上大约要 `1e12 / 9.89e14 = 1.01ms`，在 TPU v6e 上要 `1e12 / 9.1e14 = 1.1ms`。<d-footnote>注意这些芯片的定价不同，这个比较没有按成本归一化。</d-footnote>
 
-**片内通信：** *在一块加速器内部*，数据要在加速器的内存（HBM）和计算核心之间来回搬。这条"搬运通道"的带宽，就叫"HBM 带宽"。<d-footnote>NVIDIA 也称其为“memory bandwidth”（内存带宽）。</d-footnote> 在 H100 上，[这大约是 3.35TB/s](https://www.nvidia.com/en-us/data-center/h100/)，在 TPU v6e 上[这大约是 1.6TB/s](https://cloud.google.com/tpu/docs/v6e)。
+**片内通信：** *在一块加速器内部*，数据要在加速器的内存（HBM）和计算核心之间来回搬。这条“搬运通道”的带宽，就叫“HBM 带宽”。<d-footnote>NVIDIA 也称其为“memory bandwidth”（内存带宽）。</d-footnote> 在 H100 上，[这大约是 3.35TB/s](https://www.nvidia.com/en-us/data-center/h100/)，在 TPU v6e 上[这大约是 1.6TB/s](https://cloud.google.com/tpu/docs/v6e)。
 
 **芯片间通信：** 当我们把一个模型分布到*多块*加速器上时，张量经常需要在它们之间搬运。硬件上这通常有几种选择（ICI、DCN 和 PCIe），各自带宽不同。
 
@@ -102,7 +102,7 @@ $$\begin{equation}
 T_\text{comms} = \frac{\text{Communication Bytes}}{\text{Network/Memory Bandwidth Bytes/s}}
 \end{equation}$$
 
-通常（虽有例外），计算可以和片内、片间的通信同时进行、互相打掩护。这意味着**取计算时间和通信时间里较大的那个，就能给训练和推理时间定一个下界**；**把两者相加，则得到一个上界**。实践中我们按下界来优化：一是这样算起来简单，二是只要让通信躲在计算背后进行，通常就真能跑到那么快。按最大值来算，上下界至多差 2 倍，因为 $T_\text{math} + T_\text{comms} \leq 2 * \max(T_\text{math}, T_\text{comms})$。之后我们再靠建模"重叠区间"和各类开销来算得更准——这些可以对你的模型和目标系统做性能剖析（profiling）拿到。
+通常（虽有例外），计算可以和片内、片间的通信同时进行、互相打掩护。这意味着**取计算时间和通信时间里较大的那个，就能给训练和推理时间定一个下界**；**把两者相加，则得到一个上界**。实践中我们按下界来优化：一是这样算起来简单，二是只要让通信躲在计算背后进行，通常就真能跑到那么快。按最大值来算，上下界至多差 2 倍，因为 $T_\text{math} + T_\text{comms} \leq 2 * \max(T_\text{math}, T_\text{comms})$。之后我们再靠建模“重叠区间”和各类开销来算得更准——这些可以对你的模型和目标系统做性能剖析（profiling）拿到。
 
 $$\begin{equation}
 T_\text{lower}=\max(T_\text{math}, T_\text{comms})
@@ -112,7 +112,7 @@ $$\begin{equation}
 T_\text{upper} = T_\text{math} + T_\text{comms}
 \end{equation}$$
 
-假设通信和计算真能完美配合，那么当 $T_\text{math} > T_\text{comms}$ 时，硬件就是满载的，我们叫它"计算受限（compute-bound）"。反过来 $T_\text{comms} > T_\text{math}$ 时，就是"通信受限（communication-bound）"<d-footnote>在本书中，"communication-bound""comms-bound""memory-bound" 和 "bandwidth-bound" 会交替使用。</d-footnote>——算力中至少有一部分，白白耗在了等数据上。要判断一个操作属于哪种，可以看它的"**算术强度（arithmetic intensity）**"，也叫"**操作强度（operational intensity）**"。
+假设通信和计算真能完美配合，那么当 $T_\text{math} > T_\text{comms}$ 时，硬件就是满载的，我们叫它“计算受限（compute-bound）”。反过来 $T_\text{comms} > T_\text{math}$ 时，就是“通信受限（communication-bound）”<d-footnote>在本书中，“communication-bound”“comms-bound”“memory-bound” 和 “bandwidth-bound” 会交替使用。</d-footnote>——算力中至少有一部分，白白耗在了等数据上。要判断一个操作属于哪种，可以看它的“**算术强度（arithmetic intensity）**”，也叫“**操作强度（operational intensity）**”。
 
 **定义：** 一个算法的算术强度等于它所执行的总 FLOPs 与它需要通信的字节数（无论是片内还是片间）之比。
 
@@ -120,7 +120,7 @@ $$\begin{equation}
 \text{Arithmetic Intensity} = \frac{\text{Computation FLOPs}}{\text{Communication Bytes}}
 \end{equation}$$
 
-算术强度说的就是"每搬一个字节，能换来几次浮点运算"。简单讲：强度越高，$T_\text{math}$ 相对 $T_\text{comms}$ 就越大，算力通常能被充分用起来；强度越低，时间就越多地耗在通信上，算力跟着闲置。从"够用"翻到"不够用"的那个临界点，叫硬件的"峰值算术强度"——拿峰值算力除以内存带宽就得到它。
+算术强度说的就是“每搬一个字节，能换来几次浮点运算”。简单讲：强度越高，$T_\text{math}$ 相对 $T_\text{comms}$ 就越大，算力通常能被充分用起来；强度越低，时间就越多地耗在通信上，算力跟着闲置。从“够用”翻到“不够用”的那个临界点，叫硬件的“峰值算术强度”——拿峰值算力除以内存带宽就得到它。
 
 $$\begin{align*}
 T_\text{math} > T_\text{comms} \Leftrightarrow \frac{\text{Computation FLOPs}} {\text{Accelerator FLOPs/s}} > \frac{\text{Communication Bytes}}{\text{Bandwidth Bytes/s}} & \\[0.5em]
@@ -173,7 +173,7 @@ $$\begin{equation}
 
 到目前为止，我们算的都是内存带宽的 roofline，*全都发生在单块芯片之内*。但别把这当成天经地义。实际上，本书真正关心的大多数 roofline 都涉及芯片之间的通信——多半是那种矩阵被拆到多块 TPU 上做的 matmul。
 
-这里做个略人造的小例子：想相乘两个大矩阵 $X\sim \text{bf16}[B, D]$ 和 $Y \sim \text{bf16}[D, F]$，它们沿 $D$ 维被均分给了 2 块 TPU/GPU。要做这个乘法（做法我们在[第 3 节](../sharding)会细讲），可以每块 TPU 各算一半：TPU 0 算 `Z0 = X[:, :D // 2] @ Y[:D // 2, :]`，TPU 1 算 `Z1 = X[:, D // 2:] @ Y[D // 2:, :]`，再把各自的"部分和（partial sums）"发给对方、加在一起。假设拷贝带宽每个方向 `4.5e10` 字节/s，每块芯片算力 `1.97e14` FLOPs/s。那么 $T_\text{math}$ 和 $T_\text{comms}$ 各是多少？
+这里做个略人造的小例子：想相乘两个大矩阵 $X\sim \text{bf16}[B, D]$ 和 $Y \sim \text{bf16}[D, F]$，它们沿 $D$ 维被均分给了 2 块 TPU/GPU。要做这个乘法（做法我们在[第 3 节](../sharding)会细讲），可以每块 TPU 各算一半：TPU 0 算 `Z0 = X[:, :D // 2] @ Y[:D // 2, :]`，TPU 1 算 `Z1 = X[:, D // 2:] @ Y[D // 2:, :]`，再把各自的“部分和（partial sums）”发给对方、加在一起。假设拷贝带宽每个方向 `4.5e10` 字节/s，每块芯片算力 `1.97e14` FLOPs/s。那么 $T_\text{math}$ 和 $T_\text{comms}$ 各是多少？
 
 $T_\text{math}$ 显然只有之前的一半，因为每块 TPU 只做一半的工作，即<d-footnote>我们忽略了把两个部分和相加所需的 FLOPs（又是 BF 次加法），但这基本可以忽略。</d-footnote>
 

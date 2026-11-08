@@ -91,7 +91,7 @@ _styles: >
 
 这份文档是 Google DeepMind 许多人共同投入的心血，请允许我们在此简短地感谢他们！
 
-- James Bradbury、Reiner Pope、Noam Shazeer 和 Blake Hechtman 最早推导出了本书的许多核心想法，也很早就理解了"用系统的眼光看 Transformer"。
+- James Bradbury、Reiner Pope、Noam Shazeer 和 Blake Hechtman 最早推导出了本书的许多核心想法，也很早就理解了“用系统的眼光看 Transformer”。
 - Sholto Douglas 写了本书的第一版，是项目的发起人。就全书的叙事主线而言，最大的功劳属于他。
 - Jacob Austin 主导了把第一版从零散笔记打磨成更完善、更全面成品的工程。编辑、排版、发布的大量工作由他完成，其他作者的贡献也由他协调。
 - 大部分图和动画出自 Anselm Levskaya 和 Charlie Chen。
@@ -117,7 +117,7 @@ _styles: >
 - [**Distributed arrays and automatic parallelization**](https://jax.readthedocs.io/en/latest/notebooks/Distributed_arrays_and_automatic_parallelization.html)：JAX 并行 API 的极佳指南，想动手实现本书讲的想法，从这里入手最好。
 - [**Rafi Witten's High Performance LLMs 2024 Class**](https://github.com/rwitten/HighPerfLLMs2024)：我们的前同事 Rafi 开的一门 TPU 性能工程好课，讲义全在 GitHub 上，许多内容比本书讲得更深。
 - [**\[2211.05102\] Efficiently Scaling Transformer Inference**](https://arxiv.org/abs/2211.05102)：讲 Transformer 推理数学的详实论文，本书的很多内容正由它启发。
-- [**Huggingface Ultra-Scale Playbook**](https://huggingface.co/spaces/nanotron/ultrascale-playbook)：某种意义上 GPU 版的"本书"，更细致地讲 PyTorch 在训练时如何实现各种并行与省内存技术。
+- [**Huggingface Ultra-Scale Playbook**](https://huggingface.co/spaces/nanotron/ultrascale-playbook)：某种意义上 GPU 版的“本书”，更细致地讲 PyTorch 在训练时如何实现各种并行与省内存技术。
 - [**Transformer Inference Arithmetic**](https://kipp.ly/transformer-inference-arithmetic/)：一篇与本书想法高度一致的博文，配图画得极好。
 - [**Stanford CS336 Slides and Videos**](https://stanford-cs336.github.io/spring2025/index.html#coursework)：斯坦福的一门出色课程，覆盖 LLM 训练与服务的诸多细节，习题很有用——作业 1 和作业 2 尤其切题。
 - [**Stas Bekman's ML Engineering Handbook**](https://github.com/stas00/ml-engineering)：一本极其实用的 ML 基础设施手册，讲的都是本书没顾上的话题：怎么和云厂商打交道、怎么管理集群、GPU 吞吐实测数字。

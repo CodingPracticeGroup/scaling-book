@@ -199,11 +199,11 @@ HLO 其实不难读，而且它对弄清 trace 里某一段到底对应什么都
 
 {% include figure.liquid path="assets/img/tiling.png" class="img-fluid" %}
 
-`{1,0:T(2,2)}` 里，`1,0` 表示各维在物理内存中的排列顺序，从最"小"轴到最"大"轴。从右往左读这部分、对应到 `f32[3,5]` 的各维，就能推出数组的物理排布。这个例子里，物理排布就是 `[3,5]`，和逻辑形状一致。接下来，`T(2,2)` 表示数组按 `(2, 2)` 的小块铺开，每个小块内部先铺行（**行主序**）再铺列，即 `(0, 0)` 后面是 `(0, 1)`，然后 `(1, 0)`、`(1, 1)`。由于 `T(2, 2)` 分块，数组被补齐成 `[4, 6]`，内存占用约膨胀 1.6 倍。再看前面那个大 bf16 数组 `bf16[32,32,8192]{2,1,0:T(8,128)(2,1)S(1)}`：它的 `T(8,128)(2,1)` 表示两层分块——外层 `(8, 128)`、内层 `(2, 1)`（bf16 专用，保证每次读取都是 4 字节的整数倍）。比如 `bf16[4,8]{1,0:T(2,4)(2,1)}` 长这样（颜色是 (2,4) 块，红框是 (2,1) 块）：
+`{1,0:T(2,2)}` 里，`1,0` 表示各维在物理内存中的排列顺序，从最“小”轴到最“大”轴。从右往左读这部分、对应到 `f32[3,5]` 的各维，就能推出数组的物理排布。这个例子里，物理排布就是 `[3,5]`，和逻辑形状一致。接下来，`T(2,2)` 表示数组按 `(2, 2)` 的小块铺开，每个小块内部先铺行（**行主序**）再铺列，即 `(0, 0)` 后面是 `(0, 1)`，然后 `(1, 0)`、`(1, 1)`。由于 `T(2, 2)` 分块，数组被补齐成 `[4, 6]`，内存占用约膨胀 1.6 倍。再看前面那个大 bf16 数组 `bf16[32,32,8192]{2,1,0:T(8,128)(2,1)S(1)}`：它的 `T(8,128)(2,1)` 表示两层分块——外层 `(8, 128)`、内层 `(2, 1)`（bf16 专用，保证每次读取都是 4 字节的整数倍）。比如 `bf16[4,8]{1,0:T(2,4)(2,1)}` 长这样（颜色是 (2,4) 块，红框是 (2,1) 块）：
 
 {% include figure.liquid path="assets/img/tiling2.png" class="img-fluid img-small" %}
 
-分块会影响张量各块装进 VMEM 的效率。XLA 有时会在程序里插入"改块"/"改布局"的拷贝，开销有时不小。<d-footnote>JAX 提供了一个<a href="https://docs.jax.dev/en/latest/notebooks/layout.html">实验特性</a>来绕开这个问题：让 XLA 自己算出程序输入"最喜欢"的布局。用 `jax.jit` 即时编译时，你通常要传"假"输入来告诉 JAX 期望的形状和数据类型——它们往往也带着未必最优的分块信息。你可以改为把输入布局标成 AUTO，`jax.jit` 会返回被编译程序偏好的布局，然后你按那个布局显式加载张量，程序内部就不会再被塞进额外拷贝。</d-footnote>
+分块会影响张量各块装进 VMEM 的效率。XLA 有时会在程序里插入“改块”/“改布局”的拷贝，开销有时不小。<d-footnote>JAX 提供了一个<a href="https://docs.jax.dev/en/latest/notebooks/layout.html">实验特性</a>来绕开这个问题：让 XLA 自己算出程序输入“最喜欢”的布局。用 `jax.jit` 即时编译时，你通常要传“假”输入来告诉 JAX 期望的形状和数据类型——它们往往也带着未必最优的分块信息。你可以改为把输入布局标成 AUTO，`jax.jit` 会返回被编译程序偏好的布局，然后你按那个布局显式加载张量，程序内部就不会再被塞进额外拷贝。</d-footnote>
 
 ### Graph Viewer
 
@@ -223,13 +223,13 @@ HLO 其实不难读，而且它对弄清 trace 里某一段到底对应什么都
 
 {% include figure.liquid path="assets/img/transformer-ffw.png" class="img-fluid" %}
 
-这里放大的是 FFW 块。你会看到上投影算子是一个 fusion（矩阵乘）：输入 `bf16[8, 1024, 8192]` 和 `bf16[8192, 16384]`，输出 `bf16[8, 1024, 16384]]`。因为代码是我写的，我知道这是一个"4 路数据并行 + 2 路模型并行"分片矩阵乘的局部视角，真实在做的是
+这里放大的是 FFW 块。你会看到上投影算子是一个 fusion（矩阵乘）：输入 `bf16[8, 1024, 8192]` 和 `bf16[8192, 16384]`，输出 `bf16[8, 1024, 16384]]`。因为代码是我写的，我知道这是一个“4 路数据并行 + 2 路模型并行”分片矩阵乘的局部视角，真实在做的是
 
 **X:** `bf16[32, 1024, 8192]` \* **W<sub>in</sub>**: `bf16[8192, 32768]` -> **Tmp**: `bf16[32, 1024, 32768]`
 
 **我们预期它该跑多久？**首先，每个数据并行分片的批是 `8 * 1024 = 8192`，所以稳处计算受限区。这在 8 个 TPU v2 核上跑，预期耗时约 `2 * 32 * 1024 * 8192 * 32768 / (23e12 * 8) = 95.6ms`——和实测（96ms）几乎分毫不差。漂亮！这说明 FLOPs 利用率非常高！
 
-注意：Google Colab 现在不再发放 TPU v2-8 切片了。想亲手跟做一遍，可以去 [Kaggle](https://www.kaggle.com/)（目前还免费提供）或者在 GCP 上开一个 8 核切片。<d-footnote>如果只想在假问题上玩分片，也可以在 CPU 上"假装"有 8 台设备：`import jax; jax.config.update("jax_num_cpu_devices", 8)`（需要 jax >= 0.4.27 左右），然后 `print(jax.devices())`。这只适合玩具问题，性能不代表真实情况。</d-footnote>
+注意：Google Colab 现在不再发放 TPU v2-8 切片了。想亲手跟做一遍，可以去 [Kaggle](https://www.kaggle.com/)（目前还免费提供）或者在 GCP 上开一个 8 核切片。<d-footnote>如果只想在假问题上玩分片，也可以在 CPU 上“假装”有 8 台设备：`import jax; jax.config.update("jax_num_cpu_devices", 8)`（需要 jax >= 0.4.27 左右），然后 `print(jax.devices())`。这只适合玩具问题，性能不代表真实情况。</d-footnote>
 
 **通信呢？**你会注意到第二个矩阵乘末尾藏着一个小 fusion。点开它：
 
@@ -278,7 +278,7 @@ def matmul(w1, w2, x):
 
 {% enddetails %}
 
-**问题 2：**[前面那个 Transformer Colab](https://colab.research.google.com/drive/1_6krERgtolH7hbUIo7ewAMLlbA4fqEF8?usp=sharing)实现了一个简易的假 Transformer。由于 Colab 不再提供 TPU v2-8 切片，请在 [Kaggle](https://www.kaggle.com/) 或 GCP 的 8 核切片上跟做。按 Colab 里的说明，拿到"GSPMD 自动切分的朴素 Transformer"的基准：每部分各花多久？本该花多久？用的是哪种分片？试着把分片改对！*提示：用 `jax.lax.with_sharding_constraint` 来约束行为。改好之后，你能做到多好的 MFU？*
+**问题 2：**[前面那个 Transformer Colab](https://colab.research.google.com/drive/1_6krERgtolH7hbUIo7ewAMLlbA4fqEF8?usp=sharing)实现了一个简易的假 Transformer。由于 Colab 不再提供 TPU v2-8 切片，请在 [Kaggle](https://www.kaggle.com/) 或 GCP 的 8 核切片上跟做。按 Colab 里的说明，拿到“GSPMD 自动切分的朴素 Transformer”的基准：每部分各花多久？本该花多久？用的是哪种分片？试着把分片改对！*提示：用 `jax.lax.with_sharding_constraint` 来约束行为。改好之后，你能做到多好的 MFU？*
 
 供参考：初始版本约 184ms/层，优化后的 profile 是 67ms/层。做完之后，再盯着 profile 看，试试纯凭 profile 回答：
 

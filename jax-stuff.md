@@ -85,7 +85,7 @@ JAX 对多设备编程支持三种流派：
 
 1. **编译器，你来开方向盘！**让 XLA 编译器自动切分数组、自动决定要加哪些通信。这样，一个单设备程序不改一行代码，就能自动跑到几千块芯片上。
 2. **JAX，你来开方向盘！**自动并行虽好，可编译器时不时会犯疯。Explicit 分片让你照常写单设备代码，但由 JAX（而不是编译器）来做分片传播。遇到看不懂的意图，JAX 会反问你、要你讲清楚。
-3. **别猜了，我想跑什么通信我自己写！**编译器虽好，但有时做傻事、加一些你根本没想要的通信。有些时候，我们就是想明明白白地写清楚"我只要这些通信"。
+3. **别猜了，我想跑什么通信我自己写！**编译器虽好，但有时做傻事、加一些你根本没想要的通信。有些时候，我们就是想明明白白地写清楚“我只要这些通信”。
 
 | 模式 | 视角？ | 显式分片？ | 显式集合通信？ |
 |:---:|:---:|:---:|:---:|
@@ -97,11 +97,11 @@ JAX 对多设备编程支持三种流派：
 
 1. `jax.jit`（配 `Auto` 网格轴）：任何现成的 JAX 函数，都可以直接用分片输入去调用。随后 JAX 会交给 XLA 的 [Shardy](https://openxla.org/shardy) 编译器自动并行。需要时（AllGather、ReduceScatter、AllReduce 等等）XLA 会自己补上通信。它并不完美，但大多数时候干得不错：不改代码，就能把你的程序扩到任意数量的芯片。
 2. `jax.jit` 配 `Explicit` 网格轴：看起来和 (1) 差不多，但分片传播由 JAX 而不是 XLA 负责。这意味着数组的分片成了 JAX 类型系统的一部分：检测到含糊的通信，JAX 会直接报错，让你来定夺。
-3. `jax.shard_map`：更手动的那一头。你拿到的是"单设备视角"的程序，想要什么通信都得自己写。手里有分片数组、想每台设备都拿全量？自己加一个 `jax.lax.all_gather`。想把数组跨设备求和？自己加一个 `jax.lax.psum`（就是 AllReduce）。写起来更累，但也绝不会做出你没要的事。
+3. `jax.shard_map`：更手动的那一头。你拿到的是“单设备视角”的程序，想要什么通信都得自己写。手里有分片数组、想每台设备都拿全量？自己加一个 `jax.lax.all_gather`。想把数组跨设备求和？自己加一个 `jax.lax.psum`（就是 AllReduce）。写起来更累，但也绝不会做出你没要的事。
 
 <h3 id="auto-sharding-mode">Auto 分片模式</h3>
 
-`jax.jit` 在 JAX 里身兼两职。顾名思义，它"即时"把 Python 函数编译成字节码（经 XLA/HLO/LLO），跑得更快。此外，只要输入是分片的、或者你指定了 `in_sharding`/`out_sharding`，它还会让 XLA 把计算铺到多设备上、自动补通信。比如，用 `jax.jit` 写一个分片矩阵乘：
+`jax.jit` 在 JAX 里身兼两职。顾名思义，它“即时”把 Python 函数编译成字节码（经 XLA/HLO/LLO），跑得更快。此外，只要输入是分片的、或者你指定了 `in_sharding`/`out_sharding`，它还会让 XLA 把计算铺到多设备上、自动补通信。比如，用 `jax.jit` 写一个分片矩阵乘：
 
 ```py
 import jax
@@ -153,7 +153,7 @@ ROOT %AllReduce = bf16[2,8192]{1,0:T(4,128)(2,1)} AllReduce(bf16[2,8192]{1,0:T(4
 
 上面就是矩阵乘（fusion）和 AllReduce。特别留意形状：`bf16[2, 1024]` 是激活的**局部视图**——`batch_size=8` 切给了 4 台设备、`d_model=2048` 又切了 2 份。
 
-**这很魔幻！**不管程序多复杂，[Shardy](https://openxla.org/shardy) 和 jit 都会尝试给所有中间激活找出分片、按需补通信。话虽如此，Shardy 也有毛病、也会犯错。有时你打开 profile 就会看到不对劲的地方：一个根本不需要的大 AllGather 占了 80% 的时长。这时候，我们可以出手"纠偏"——给中间张量显式标注 `jax.lax.with_sharding_constraint`。比如两次矩阵乘之间，我可以强行让中间激活沿 `y` 维分片（虽然这不是什么好主意）：
+**这很魔幻！**不管程序多复杂，[Shardy](https://openxla.org/shardy) 和 jit 都会尝试给所有中间激活找出分片、按需补通信。话虽如此，Shardy 也有毛病、也会犯错。有时你打开 profile 就会看到不对劲的地方：一个根本不需要的大 AllGather 占了 80% 的时长。这时候，我们可以出手“纠偏”——给中间张量显式标注 `jax.lax.with_sharding_constraint`。比如两次矩阵乘之间，我可以强行让中间激活沿 `y` 维分片（虽然这不是什么好主意）：
 
 ```py
 import jax
@@ -170,11 +170,11 @@ def matmul(x, W_in, W_out):
   return jnp.einsum('bf,df->bd', hidden, W_out)
 ```
 
-在"用 `jax.lax.with_sharding_constraint` 控制中间分片"的自动切分世界里，这样的活儿大概占了 JAX 并行编程的 60%。可"挠编译器痒痒"是出了名的不好玩：你可以把每个中间变量都标一遍，还是不敢保证拿到想要的结果。那么，如果分片传播这件事本来就由 JAX 自己来管、来控，会怎样？
+在“用 `jax.lax.with_sharding_constraint` 控制中间分片”的自动切分世界里，这样的活儿大概占了 JAX 并行编程的 60%。可“挠编译器痒痒”是出了名的不好玩：你可以把每个中间变量都标一遍，还是不敢保证拿到想要的结果。那么，如果分片传播这件事本来就由 JAX 自己来管、来控，会怎样？
 
 <h3 id="explicit-sharding-mode">Explicit 分片模式</h3>
 
-Explicit 分片（又叫"分片进类型"）看起来和自动分片很像，只是分片传播发生在 JAX 这一层！每个 JAX 运算都有一条分片规则：读入参的分片，推出结果的分片。用 `jax.typeof` 就能看到结果分片：
+Explicit 分片（又叫“分片进类型”）看起来和自动分片很像，只是分片传播发生在 JAX 这一层！每个 JAX 运算都有一条分片规则：读入参的分片，推出结果的分片。用 `jax.typeof` 就能看到结果分片：
 
 ```py
 import jax
@@ -244,7 +244,7 @@ Auto 模式和 Explicit 模式可以用 `jax.sharding.auto_axes` 与 `jax.shardi
 
 <h3 id="manual-sharding-mode-via-shard-map">Manual 分片模式：shard_map</h3>
 
-如果说 Shardy 是"编译器你来开方向盘"模式，那 jax [shard_map](https://jax.readthedocs.io/en/latest/jep/14273-shard-map.html) 就是把方向盘整个交到你手里。输入的分片还是像 `jax.jit` 那样指定，但之后所有通信都得自己写。`jax.jit` 给你的是跨设备的全局视图，`shard_map` 给你的则是每台设备的局部视图。
+如果说 Shardy 是“编译器你来开方向盘”模式，那 jax [shard_map](https://jax.readthedocs.io/en/latest/jep/14273-shard-map.html) 就是把方向盘整个交到你手里。输入的分片还是像 `jax.jit` 那样指定，但之后所有通信都得自己写。`jax.jit` 给你的是跨设备的全局视图，`shard_map` 给你的则是每台设备的局部视图。
 
 看个例子。先试着想想这个函数在干什么：<d-footnote>想在自己的 Colab 里假装一张网格玩一玩，可以跑这个单元：`import jax; jax.config.update('jax_num_cpu_devices', 8)`</d-footnote>
 
@@ -271,16 +271,16 @@ assert out.shape == (4,)
 
 **它到底干了什么？**`slice_and_average` 会在每台 TPU 上各拿数组的 1/8 运行：从各自那一份里切出前 4 个元素，再在整张网格上求平均。等价于 `mean(x[:4], x[64:68], x[128:132], …)`。这很妙——因为这种操作在别的写法里根本不好表达。
 
-**为什么不直接用 jax.jit？**若用 `jax.jit`，`slice_and_average` 看到的就是全局视图（完整的 `[512,]` 数组）。你得先把这段"不均匀的切片"抠出来、再求平均，还得指望 XLA 正确理解你的意图——它可能加错通信，也可能直接懵掉。而在局部视图里，我们看得清清楚楚，只写需要的那点通信。
+**为什么不直接用 jax.jit？**若用 `jax.jit`，`slice_and_average` 看到的就是全局视图（完整的 `[512,]` 数组）。你得先把这段“不均匀的切片”抠出来、再求平均，还得指望 XLA 正确理解你的意图——它可能加错通信，也可能直接懵掉。而在局部视图里，我们看得清清楚楚，只写需要的那点通信。
 
 **例子 [集合式矩阵乘]：**来看更真实的场景。假设要实现模型并行，激活一开始就是模型分片的，即 A[B<sub>X</sub>, D<sub>Y</sub>] \*<sub>D</sub> W[D, F<sub>Y</sub>] -> Out[B<sub>X</sub>, F<sub>Y</sub>]。朴素做法是先对 A 做 AllGather，再本地矩阵乘：
 
 1. A[B<sub>X</sub>, D] = **AllGather**<sub>Y</sub>(A[B<sub>X</sub>, D<sub>Y</sub>])
 2. Out[B<sub>X</sub>, F<sub>Y</sub>] = A[B<sub>X</sub>, D] *<sub>D</sub> W[D, F<sub>Y</sub>]
 
-可惜这不好：通信没法和计算重叠。要做重叠，得用"集合式矩阵乘（collective matmul）"，可参考 [Wang et al. 2023](https://dl.acm.org/doi/pdf/10.1145/3567955.3567959)。算法大致是：
+可惜这不好：通信没法和计算重叠。要做重叠，得用“集合式矩阵乘（collective matmul）”，可参考 [Wang et al. 2023](https://dl.acm.org/doi/pdf/10.1145/3567955.3567959)。算法大致是：
 
-* 对每个 Y 分片：用本地那块 A 乘本地那块 W，得到 `[B / X, F / Y]` 的结果；与此同时，把 A 做一次置换，让下一块"自己送上门"，算完后把结果累加起来。
+* 对每个 Y 分片：用本地那块 A 乘本地那块 W，得到 `[B / X, F / Y]` 的结果；与此同时，把 A 做一次置换，让下一块“自己送上门”，算完后把结果累加起来。
 
 用 `jax.shard_map` 实现它相当容易：
 
@@ -359,7 +359,7 @@ np.testing.assert_array_equal(shmapped_out, expected_out)
 
 {% include figure.liquid path="assets/img/overlapped.png" class="img-fluid" %}
 
-还值得注意：收缩维不分片时的矩阵乘耗时是 [224 微秒](https://imgur.com/a/i3gNKfq)——我们已经非常接近"完全不分片"的基线了。想把 TPU 利用率榨上去，做的就是这样那种性能工程。更多 `shard_map` 例子，[这篇笔记](https://jax.readthedocs.io/en/latest/notebooks/shard_map.html#example-1-all-gather-on-one-side)写得很好。
+还值得注意：收缩维不分片时的矩阵乘耗时是 [224 微秒](https://imgur.com/a/i3gNKfq)——我们已经非常接近“完全不分片”的基线了。想把 TPU 利用率榨上去，做的就是这样那种性能工程。更多 `shard_map` 例子，[这篇笔记](https://jax.readthedocs.io/en/latest/notebooks/shard_map.html#example-1-all-gather-on-one-side)写得很好。
 
 下面来几道实用的题，用 `jax.jit` 或 `shard_map` 写写看！
 
@@ -447,9 +447,9 @@ np.testing.assert_array_equal(y1, y2)
 
 {% enddetails %}
 
-**问题 2：**我们一起做一个基础的"专家混合"（mixture of experts）模型。设 **W**：float32[E<sub>X</sub>, D, F] 是 E 个"专家"矩阵；**A**：float32[S<sub>X</sub>, D] 是激活；**B**：int32[S<sub>X</sub>] 是"路由分配"，B[i] 是 `[0, E)` 内的整数，表示这条激活该交给哪个矩阵处理。请实现 `Out[i] = A[i] @ W[B[i]]`。
+**问题 2：**我们一起做一个基础的“专家混合”（mixture of experts）模型。设 **W**：float32[E<sub>X</sub>, D, F] 是 E 个“专家”矩阵；**A**：float32[S<sub>X</sub>, D] 是激活；**B**：int32[S<sub>X</sub>] 是“路由分配”，B[i] 是 `[0, E)` 内的整数，表示这条激活该交给哪个矩阵处理。请实现 `Out[i] = A[i] @ W[B[i]]`。
 
-1. 先完全不管分片，把这些张量都小到能塞进一台设备。写出本地实现。*注意别真的物化出一个 `[S, D, F]` 的数组！提示：办法不止一个。最省事的是：循环每个专家，把整个 **A** 乘 `W[e]`，再把没路由到专家 `e` 的 token 掩掉。或者：把 token 按专家排序、装进形状 `[E, S, D]` 的补齐缓冲区，做一次批量矩阵乘、掩掉 padding（为什么第二维必须也是 S？）。`jax.lax.ragged_dot` 做的正是"排好序、不补齐"的那个版本。*
+1. 先完全不管分片，把这些张量都小到能塞进一台设备。写出本地实现。*注意别真的物化出一个 `[S, D, F]` 的数组！提示：办法不止一个。最省事的是：循环每个专家，把整个 **A** 乘 `W[e]`，再把没路由到专家 `e` 的 token 掩掉。或者：把 token 按专家排序、装进形状 `[E, S, D]` 的补齐缓冲区，做一次批量矩阵乘、掩掉 padding（为什么第二维必须也是 S？）。`jax.lax.ragged_dot` 做的正是“排好序、不补齐”的那个版本。*
 
 2. 把上面的方法直接 `jax.jit`，会发生一些事。profile 一下：它自己决定了什么通信？花了多久？
 
@@ -506,7 +506,7 @@ def matmul(W, x, B):
 
 **问题 3：**上面的集合式矩阵乘其实和真实 LLM 关系很大。我们把它改造成完整的 Transformer 栈。
 
-1. 先练手实现 AllReduce 版集合式矩阵乘：A[B<sub>X</sub>, D<sub>Y</sub>] \*<sub>D</sub> W[D<sub>Y</sub>, F] -> Out[B<sub>X</sub>, F]。注意输出只沿 X 分片，即沿 Y 复制。朴素算法上文讲过：本地矩阵乘 + AllReduce。请做一个通信可重叠的"集合式"版本。*提示：沿输出维分块，放心使用 `jax.lax.psum`（即 AllReduce）。* *注：受 XLA 处理方式的限制，它实际可能并不比基线快。*
+1. 先练手实现 AllReduce 版集合式矩阵乘：A[B<sub>X</sub>, D<sub>Y</sub>] \*<sub>D</sub> W[D<sub>Y</sub>, F] -> Out[B<sub>X</sub>, F]。注意输出只沿 X 分片，即沿 Y 复制。朴素算法上文讲过：本地矩阵乘 + AllReduce。请做一个通信可重叠的“集合式”版本。*提示：沿输出维分块，放心使用 `jax.lax.psum`（即 AllReduce）。* *注：受 XLA 处理方式的限制，它实际可能并不比基线快。*
 
 2. 与 AllReduce 版相对的是 ReduceScatter 版：Tmp[B<sub>X</sub>, F<sub>Y</sub>] \*<sub>F</sub> W2[F<sub>Y</sub>, D] -> Out[B<sub>X</sub>, D<sub>Y</sub>]。Transformer 的下投影矩阵正是这个形状。请在 JAX 里实现它的集合式、可重叠版本。注意只传非传不可的那点数据。*提示：边累加边置换结果。*
 
