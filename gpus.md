@@ -688,9 +688,9 @@ $$T_\text{comms} = \frac{4 \cdot B \cdot D \cdot (Z-8)}{W \cdot Z} \cdot \min\le
 
 要么 $K > Z/8$ 且 $F > \alpha \cdot (Z - 8)/k$；要么 $Z \gg K$ 且 $F > 8 \cdot \alpha$，其中 $\alpha = C/W$。这给出专家并行可行的两个“领地”：要么小规模专家并行（约 2 个节点）配小 $F$；要么大 $F$，$Z$ 可以任意大（直到 E 路专家并行）。
 
-两种在实践里都看得到：DeepSeek v3 的 F 很小，跨节点专家平行小而受限；而 F 大的模型可以边 TP 边做大规模跨节点 EP。
+两种在实践里都看得到：DeepSeek v3 的 F 很小，跨节点专家并行小而受限；而 F 大的模型可以边 TP 边做大规模跨节点 EP。
 
-<p markdown=1 class="takeaway">**要点**：若 $F < 8 * C / W_\text{node}$，专家平行只宜跨 1-2 个节点，成本和 TP 相当（略低）；若 $F > 8 * C / W_\text{node}$，则可做大量（至 $E$ 个节点）、成本不高的专家平行。</p>
+<p markdown=1 class="takeaway">**要点**：若 $F < 8 * C / W_\text{node}$，专家并行只宜跨 1-2 个节点，成本和 TP 相当（略低）；若 $F > 8 * C / W_\text{node}$，则可做大量（至 $E$ 个节点）、成本不高的专家并行。</p>
 
 ### 流水线并行
 
@@ -716,7 +716,7 @@ $$T_\text{per-layer comms} \approx 1.5 \cdot \frac{2BD}{W \cdot N_\text{layers}}
 
 这些难题各有绕法，但实现复杂、难维护。平心而论，流水线始终是通信成本相对最低的方法之一。
 
-**关于延迟的提醒：**前面说过，GPU 即使消息不小也很难跑满 AllReduce 带宽。所以哪怕理论上能把专家平行的 AllToAll 铺到多节点，实际能兑现一半带宽就不错。因此实践中总尽量把 TP 或 EP 收在更少节点里，把延迟开销压到最低。
+**关于延迟的提醒：**前面说过，GPU 即使消息不小也很难跑满 AllReduce 带宽。所以哪怕理论上能把专家并行的 AllToAll 铺到多节点，实际能兑现一半带宽就不错。因此实践中总尽量把 TP 或 EP 收在更少节点里，把延迟开销压到最低。
 
 ### 例子
 
