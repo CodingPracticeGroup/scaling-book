@@ -1,8 +1,8 @@
 ---
 layout: distill
-title: "Training LLaMA 3 on TPUs"
+title: "在 TPU 上训练 LLaMA 3"
 # permalink: /main/
-description: "Let's take a close look at how we'd train LLaMA 3 models on TPU v5p using what we've learned in the previous section. How big are they? How expensive is training in different configurations? How are they sharded? Let's work through some back-of-the-envelope estimates for how the previous sections map onto real models."
+description: "让我们用上一节学到的东西，近距离看一看：在 TPU v5p 上训练 LLaMA 3 系列模型到底是什么情形。它们有多大？不同配置下训练要花多少钱？它们是怎么分片的？让我们动手做几个'纸面估算'，把前面几节的方法落到真实模型上。"
 date: 2025-02-04
 future: true
 htmlwidgets: true
@@ -11,10 +11,10 @@ hidden: false
 section_number: 6
 
 previous_section_url: "../training"
-previous_section_name: "Part 5: Training"
+previous_section_name: "第 5 部分 · Transformer 训练并行"
 
 next_section_url: ../inference
-next_section_name: "Part 7: Inference"
+next_section_name: "第 7 部分 · 推理"
 
 bibliography: main.bib
 
@@ -52,10 +52,10 @@ authors:
 #     for hyperlinks within the post to work correctly.
 #   - please use this format rather than manually creating a markdown table of contents.
 toc:
-  - name: "What does LLaMA 3 look like?"
-  - name: "Counting parameters and FLOPs"
-  - name: "How to shard LLaMA 3-70B for training"
-  - name: "Worked Problems"
+  - name: "LLaMA 3 长什么样？"
+  - name: "数参数量和 FLOPs"
+  - name: "训练 LLaMA 3-70B 时该怎么分片"
+  - name: "动手解题"
 
 # Below is an example of injecting additional post-specific styles.
 # This is used in the 'Layouts' section of this post.
@@ -77,13 +77,13 @@ _styles: >
   }
 ---
 
-_Our goal in this section is to apply results from the previous section to a very practical problem: training the LLaMA 3 family (herd) of models. Unlike the previous sections we want you to do a lot of this work yourself. For this reason, we've hidden the answers to each section so you can try to answer it first. Try grabbing a pen and doing it by hand!_
+_这一节的目标，是把上一节的结果用在一个非常实际的问题上：训练 LLaMA 3 这个家族的模型。和前几节不同，我们希望你自己多动手算。所以每一部分的答案都被折叠起来了，先自己答，再对答案。强烈建议拿支笔手算一遍！_
 
-### What does LLaMA 3 look like?
+### LLaMA 3 长什么样？
 
-The LLaMA-3 model family<d-cite key="llama3"></d-cite> includes 3 main models: LLaMA 3 8B, 70B, and 405B. We'll mostly focus on 70B, and leave 8B and 405B for you to explore in the problem section at the end. Here's the architecture for LLaMA 3-70B, taken from the LLaMA [HuggingFace page](https://huggingface.co/NousResearch/Meta-Llama-3-70B/blob/main/config.json).
+LLaMA-3 模型家族<d-cite key="llama3"></d-cite>主要有三个模型：LLaMA 3 8B、70B 和 405B。我们主要盯 70B，8B 和 405B 留给你在文末的习题里探索。这是 LLaMA 3-70B 的架构，取自 LLaMA 的 [HuggingFace 页面](https://huggingface.co/NousResearch/Meta-Llama-3-70B/blob/main/config.json)。
 
-| **hyperparam**              | **value** |
+| **超参数**                  | **值**      |
 | --------------------------- | --------- |
 | $$n_\text{layers}$$ (L)     | 80        |
 | $$d_\text{model}$$ (D)      | 8,192     |
@@ -93,121 +93,121 @@ The LLaMA-3 model family<d-cite key="llama3"></d-cite> includes 3 main models: L
 | $$d_\text{qkv}$$ (H)        | 128       |
 | $$n_\text{embeddings}$$ (V) | 128,256   |
 
-To highlight how easy this is to find, here's the config itself, along with a mapping:
+这些数据有多好找呢——配置文件本身就长这样，我们还标了对应关系：
 
 {% include figure.liquid path="assets/img/llama-json.png" class="img-fluid" %}
 
-_It's useful to make a big table with these numbers for many different open-source LLMs, so you can quickly compare the design decisions they've made._
+_建议为各个开源大模型整理一张这样的大表，这样能一眼看出它们在架构上做了哪些取舍。_
 
-### Counting parameters and FLOPs
+### 数参数量和 FLOPs
 
-**Question:** From this table, can we calculate the LLaMA 3-70B parameter count? 🤫 Let's apply the content of [Section 4](../transformers) and see if we can get 70B!
+**问题：** 看着这张表，我们能算出 LLaMA 3-70B 的参数量吗？🤫 套用[第 4 部分](../transformers)的方法，看看能不能算出 70B！
 
-| param            | formula                                                                                                                                           | count                                                        |
+| 参数            | 公式                                                                                                                                           | 数量                                                        |
 | ---------------- | ------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------ |
-| FFW params       | d_model * d_ff * 3 (for SwiGLU gate, up, and down projections) * n_layers                                                                                         | 8,192 * 8,192 * 3.5 * 3 * 80 = **56.3e9**                    |
-| Vocab params     | 2 (input and output embeddings) * n_embeddings * d_model                                                                                          | 2 * 128,256 * 8,192 = **2.1e9**                              |
-| Attention params | n_layers * [ 2 (for q embedding and concatenated output projection) * d_model * n_heads * d_qkv + 2 (for k and v) * d_model * n_kv_heads * d_qkv] | 80 * (2 * 8,192 * 64 * 128 + 2 * 8,192 * 8 * 128) = **12e9** |
+| FFW 参数       | d_model * d_ff * 3（SwiGLU 的门控、上、下三个投影）* n_layers                                                                                         | 8,192 * 8,192 * 3.5 * 3 * 80 = **56.3e9**                    |
+| 词表参数     | 2（输入和输出嵌入）* n_embeddings * d_model                                                                                          | 2 * 128,256 * 8,192 = **2.1e9**                              |
+| 注意力参数 | n_layers * [ 2（q 投影与拼接后的输出投影）* d_model * n_heads * d_qkv + 2（k 和 v）* d_model * n_kv_heads * d_qkv] | 80 * (2 * 8,192 * 64 * 128 + 2 * 8,192 * 8 * 128) = **12e9** |
 |                  |                                                                                                                                                   | 56.3e9 + 2.1e9 + 12e9 = **70.4e9**                           |
 
-That's great! We get the number we expect. You'll notice as expected that the FFW parameters totally dominate the overall parameter count, although attention is non-trivial.
+太好了！算出来的正是我们预期的数字。如你所料，FFW 参数在总参数量中占绝对大头，不过注意力部分也不可忽略。
 
-<p markdown=1 class="takeaway">**Takeaway**: The 3 big weight matrices in the MLP block are so much larger than all the other arrays in the Transformer that we can typically almost ignore all other parameters when reasoning about model memory or FLOPs. For LLaMA 3-70B, they represent 56B of 70B parameters.</p>
+<p markdown=1 class="takeaway">**要点**：MLP 块里那三个大权重矩阵，比 Transformer 里其他任何数组都大得多，所以讨论模型内存或 FLOPs 时，其他参数几乎都可以忽略。对 LLaMA 3-70B 来说，70B 参数里有 56B 来自这三个矩阵。</p>
 
-Let's look at FLOPs now! *Remember the general rules for training from [Section 4](../transformers).*
+下面来看 FLOPs！*先把[第 4 部分](../transformers)里的训练通用法则想起来。*
 
-**Question:** How many FLOPs does LLaMA-3 perform per token per training step? _This helps us determine how expensive the whole training process will be._
+**问题：** LLaMA-3 每个训练步、每个 token 要做多少 FLOPs？_这能帮我们算出整个训练有多贵。_
 
-{% details Click here for the answer, once you've thought about it! %}
+{% details 想好之后再点开答案！ %}
 
-**Answer**: As shown in [Section 4](../transformers), we do roughly $$6 \cdot \text{param count}$$ FLOPs per token, so here that's roughly `6 * 70e9 = 4.2e11` FLOPs / token. That's about half a TFLOP per token per step. Assuming we're compute-bound, this should take roughly `4.2e11 / 4.59E+14 = 1ms` on a single TPU v5p chip, assuming perfect FLOPs utilization.
-
-{% enddetails %}
-
-**Question:** LLaMA 3 was trained for about 15 trillion tokens. How many FLOPs is that total?
-
-{% details Click here for the answer, once you've thought about it! %}
-
-**Answer**: That's easy, it's just `4.2e11 * 15e12 = 6.3e24 FLOPs` total. 6.3 yottaFLOPs. That's a lot! On a single TPU this would take `6.3e24 / 4.59E+14 = 435 years`. That's also a lot!
+**答案**：如[第 4 部分](../transformers)所示，每个 token 大约做 $$6 \cdot \text{param count}$$ FLOPs，这里就是大约 `6 * 70e9 = 4.2e11` FLOPs / token——每步每 token 大约半 TFLOP。只要处于计算受限状态，单块 TPU v5p 在算力完美利用下做这一步大约需要 `4.2e11 / 4.59E+14 = 1ms`。
 
 {% enddetails %}
 
-**Question:** Let's say we wanted to train on a full TPU v5p pod with 16x20x28 = 8960 chips. How long would this take to train at 40% MFU in bfloat16, assuming we are compute-bound?
+**问题：** LLaMA 3 一共训练了约 15 万亿（trillion）个 token，总共是多少 FLOPs？
 
-{% details Click here for the answer, once you've thought about it! %}
+{% details 想好之后再点开答案！ %}
 
-**Answer**: We know that each TPU v5p can perform 4.59e14 FLOPs / second. At 40% MFU, this will take about `T = 6.3e24 / (8960 * 4.59e14 * 0.4) = 3.8e6 seconds`. **This is about 44 days!** That's fairly reasonable, assuming we can actually achieve 40% MFU.
-
-{% enddetails %}
-
-**Question:** LLaMA 3-70B was pretrained with a batch size of about 4M tokens. How many TPUs do we need at minimum to train with this batch size? _You can assume bfloat16 parameters and float32 optimizer state, and that you checkpoint activations 2 times per layer (at the beginning of the layer and after attention)._
-
-{% details Click here for the answer, once you've thought about it! %}
-
-**Answer**: This question is primarily asking about memory usage, since that's the only strict constraint on available compute. During training, we have three primary uses of HBM: model parameters, optimizer state, and activation checkpoints. If we assume bfloat16 weights, float32 optimizer state, and a _very_ conservative activation checkpointing scheme (2 times per layer), we have:
-
-| **Params** | 2 * 70GB | ~140GB |
-| **Optimizer State** | 8 * 70GB | ~560GB |
-| **Activation Checkpoints** | 2 * 8192 * 4e6 * 2 * 80 | ~10.5TB |
-| **Total**                |                         | ~11.2TB |
-
-The total here is about 11.2TB. You notice that activation checkpointing strongly dominates the memory picture, even with a very conservative checkpointing scheme. We could technically go to 1 checkpoint per layer, or do microbatching, but this is a reasonable picture. With these assumptions, since each TPU v5p has 96GB of HBM, we need `11.2e12 / 96e9 = 117` TPUs. That's not very much actually!
-
-*Why wouldn't we do this?* Well, because it would take us `44 days * 8960 / 117 = 3369 days` to train. That's nearly ten years. **That's a lot.** Still, this makes it clear that we're using these large clusters not because we're bound by memory but rather because we need the extra FLOPs. Also, since we're checkpointing so infrequently, we're doing close to 8ND FLOPs instead of 6ND.
-{% enddetails %}
-
-**Question:** Under the same assumptions as the question above, if we use 8960 TPU v5p chips, how much memory will we use per-chip?
-
-{% details Click here for the answer, once you've thought about it! %}
-
-**Answer**: Our total memory is still about 11.2TB, so per-chip we'll be using about 1.3GB per chip, which is basically nothing. If we did much more aggressive checkpointing, e.g. 12 checkpoints per layer, we'd still only be at 8GB per chip. We're nowhere near being memory bound during training at these scales.
+**答案**：简单，`4.2e11 * 15e12 = 6.3e24 FLOPs`。6.3 yottaFLOPs，非常庞大！在单块 TPU 上这要跑 `6.3e24 / 4.59E+14 = 435 年`。这也是个吓人的数字！
 
 {% enddetails %}
 
-<p markdown=1 class="takeaway">**Takeaways**: It is technically possible to train even very large models on very small topologies, with the caveat that they will likely take a long time. Being able to calculate the total FLOPs of a training run allows us to ballpark its training time by assuming a modest MFU and a known topology.</p>
+**问题：** 假设我们要在满配 TPU v5p 整机群（16x20x28 = 8960 块芯片）上训练。bfloat16、40% MFU、计算受限，需要训练多久？
 
-### How to shard LLaMA 3-70B for training
+{% details 想好之后再点开答案！ %}
 
-Let's stick to our setting from above and say we want to train LLaMA 3-70B with 4M token batch size (1024 sequences of length 4096 per batch) on a TPU v5p pod of 8960 chips. Let's discuss what the best sharding strategy is for this model.
-
-**Question:** Under the assumptions above, can we train our model with FSDP alone? To start, let's say we can't do any sequence/context parallelism. _This should be the first idea you have, since it's simple and will introduce no extra communication if it works._
-
-{% details Click here for the answer, once you've thought about it! %}
-
-**Answer**: This answer will be a little pedantic. As noted above, LLaMA 3-70B is initially trained with sequences of length 4K, so the batch size of 4M tokens gives us a *sequence batch size* of 1024. That means we can only really do pure data parallelism/FSDP up to 1024 chips _because that's how many sequences we have to do data parallelism over_. So the answer in the simple sense of "fully data parallelism with no extra communication" is no. The next question will answer a slightly less pedantic version of this.
+**答案**：每块 TPU v5p 能跑 4.59e14 FLOPs/秒。40% MFU 下需要 `T = 6.3e24 / (8960 * 4.59e14 * 0.4) = 3.8e6 秒`。**大约 44 天！** 这相当合理——前提是我们真能做到 40% MFU。
 
 {% enddetails %}
 
-**Question:** Let's relax the requirement of not doing any sequence sharding. If we allow ourselves to do FSDP over both the batch _and_ sequence axes, can we train LLaMA 3-70B with only FSDP on 8960 chips?
+**问题：** LLaMA 3-70B 预训练用的批大小约为 400 万 token。要用这个批大小训练，至少需要多少块 TPU？_可以假设 bfloat16 参数、float32 优化器状态，且每层做 2 次激活检查点（层开头、注意力之后各一次）。_
 
-{% details Click here for the answer, once you've thought about it! %}
+{% details 想好之后再点开答案！ %}
 
-**Answer**: Now that we're allowing ourselves to do sequence/context parallelism as well, we can scale up way more. First let's calculate our per-device batch size. If we do 8960-way FSDP, we end with a per-TPU batch size of `4 * 1024 * 1024 / 8960 = 468 tokens`. We know from the previous section that we become ICI-bound by FSDP when $$\text{per device batch size} < 2550 / M_X$$. Since we can dedicate 3 axes here with a full 3D pod, this would give us a lower bound of 850, which we're well below. **So the answer is no, even with 3 axes. We would be solidly communication-bound.**
+**答案**：这题主要考内存，因为内存是唯一的硬约束。训练时 HBM 的三大用户是：模型参数、优化器状态、激活检查点。假设 bfloat16 权重、float32 优化器状态、外加一个*非常*保守的检查点方案（每层 2 次），我们有：
+
+| **参数** | 2 * 70GB | ~140GB |
+| **优化器状态** | 8 * 70GB | ~560GB |
+| **激活检查点** | 2 * 8192 * 4e6 * 2 * 80 | ~10.5TB |
+| **总计**                |                         | ~11.2TB |
+
+总共约 11.2TB。你会发现激活检查点才是内存大头——哪怕检查点已经放得很保守。我们其实还可以激进到每层 1 个检查点、或者做微批，但眼下这个假设是合理的。按这些假设，每块 TPU v5p 有 96GB HBM，所以需要 `11.2e12 / 96e9 = 117` 块 TPU。其实不多！
+
+*那为什么不这么干？* 因为训练要跑 `44 天 * 8960 / 117 = 3369 天`，快十年了。**太慢了。** 不过这恰好说明：我们用这么大的集群，不是因为内存装不下，而是需要更多的 FLOPs。另外，检查点做得这么稀疏，实际计算量接近 8ND 而不是 6ND。
+{% enddetails %}
+
+**问题：** 还是上面那题的假设，如果我们用 8960 块 TPU v5p，每块芯片会用多少内存？
+
+{% details 想好之后再点开答案！ %}
+
+**答案**：总内存还是约 11.2TB，摊到每块芯片只要约 1.3GB，几乎可以忽略。就算检查点做得激进得多，比如每层 12 个检查点，每台也只有 8GB。在这个规模下训练，离内存受限还远得很。
 
 {% enddetails %}
 
-**Question:** Now let's look at mixed tensor parallelism and FSDP. Does there exist some combination that lets us remain compute-bound? What amount of FSDP and tensor parallelism should we do if so?
+<p markdown=1 class="takeaway">**要点**：哪怕非常小的拓扑，理论上也能训练非常大的模型——只是大概率要跑到天荒地老。会算训练总 FLOPs 之后，给定一个适中的 MFU 和已知的拓扑，我们就能对训练时长来个 ballpark 估算。</p>
 
-{% details Click here for the answer, once you've thought about it! %}
+### 训练 LLaMA 3-70B 时该怎么分片
 
-**Answer**: First let's check to see if this will even fit. We know that we'll be comms-bound if our per-chip batch size is less than $2550^2 / 2F = 113$. As we saw above, we're slightly above this. So that's great! Now to pick the optimal amount of FSDP, we can use the formula
+沿用上面的设定：在 8960 块芯片的 TPU v5p 整机群上，以 400 万 token 的批大小（每批 1024 条长度为 4096 的序列）训练 LLaMA 3-70B。我们来讨论这个模型最好的分片策略。
+
+**问题：** 在上面的假设下，只用 FSDP 能训练吗？先假设不能做任何序列/上下文并行。_这应该是你冒出的第一个念头——它最简单，而且如果行得通，不引入任何额外通信。_
+
+{% details 想好之后再点开答案！ %}
+
+**答案**：这个答案会有点较真。上面说过，LLaMA 3-70B 一开始是用长度 4K 的序列训练的，所以 400 万 token 的批对应*序列批大小* 1024。这意味着纯数据并行/FSDP 最多只能做到 1024 块芯片——因为我们只有这么多条序列可以拿来切。所以在"完全不额外通信的完全数据并行"这个严格意义上，答案是：不行。下一题会回答一个不那么较真的版本。
+
+{% enddetails %}
+
+**问题：** 放宽"不做序列切分"的要求。如果允许沿批维*和*序列维一起做 FSDP，只用 FSDP 能在 8960 块芯片上训练 LLaMA 3-70B 吗？
+
+{% details 想好之后再点开答案！ %}
+
+**答案**：允许序列/上下文并行后，能扩的规模大多了。先算每设备批大小：做 8960 路 FSDP 的话，每台 TPU 的批是 `4 * 1024 * 1024 / 8960 = 468 tokens`。上一节知道，FSDP 在 $$\text{per device batch size} < 2550 / M_X$$ 时被 ICI 卡住。满配 3D 整机群允许我们用 3 条轴，下限是 850，而我们远低于它。**所以答案是不行——哪怕用满 3 条轴，也会被通信结结实实地卡住。**
+
+{% enddetails %}
+
+**问题：** 现在来看张量并行 + FSDP 的混合方案。存在某种组合让我们保持计算受限吗？如果存在，FSDP 和张量并行各做多少？
+
+{% details 想好之后再点开答案！ %}
+
+**答案**：先确认这能不能行。已知每芯片批大小低于 $2550^2 / 2F = 113$ 时会被通信卡住；上面算过我们略高于这个线，太好了！接着用这个公式选 FSDP 的最优规模：
 
 $$X_{opt} = \sqrt{\frac{2BN}{F}} = \sqrt{\frac{2 \cdot 4.19e6 \cdot 8960}{28672}} = 1618$$
 
-Rounding to a reasonable multiple of 2, that gives us roughly 2048-way FSDP and 4-way tensor parallelism. That should work well!
+取个合适的 2 的倍数，大约就是 2048 路 FSDP + 4 路张量并行。这样应该跑得不错！
 
 {% enddetails %}
 
-<p markdown=1 class="takeaway">**Takeaways**: We can train LLaMA-3 with a 4M token batch size on a full TPU v5p pod with a mixture of data parallelism (1024-way), sequence parallelism (2-way), and tensor parallelism (4-way) without being communication-bound. We will be comms-bound if we try to do pure FSDP or FSDP + sequence parallelism. The equations we've cooked up in the previous section are very practical.</p>
+<p markdown=1 class="takeaway">**要点**：用"数据并行（1024 路）+ 序列并行（2 路）+ 张量并行（4 路）"的组合，我们就能在满配 TPU v5p 整机群上以 400 万 token 的批训练 LLaMA-3，且不被通信卡住。若只用纯 FSDP、或 FSDP+序列并行，就会被通信卡住。上一节推的那些公式真的很有用。</p>
 
-## Worked Problems
+## 动手解题
 
-**Question 1 [Scaling LLaMA 70B to more chips]:** say we want to train LLaMA 3-70B on 4 pods with the same batch size. What parallelism scheme would we use? Would we be compute or communication bound? Roughly how long would it take to train? *Make sure to use the correct roofline bound.*
+**问题 1 [把 LLaMA 70B 扩到更多芯片]：** 假设要在 4 个整机群上以同样的批大小训练 LLaMA 3-70B。该用什么并行方案？会是计算受限还是通信受限？训练大概要多久？*注意用对 roofline 界限。*
 
-**Question 2 [LLaMA 405B]:**
+**问题 2 [LLaMA 405B]：**
 
-(a) Using the LLaMA 3-405B [config](https://huggingface.co/NousResearch/Hermes-3-Llama-3.1-405B/blob/main/config.json) (a gated model, so you may need to log in and request access to view it), write a table with all the key hyperparameters as above. How many total parameters does this model have? How many FLOPs per training step? How many FLOPs do we perform if we train for 15T tokens?
+(a) 用 LLaMA 3-405B 的[配置文件](https://huggingface.co/NousResearch/Hermes-3-Llama-3.1-405B/blob/main/config.json)（它是带门控的模型，可能需要登录申请权限才能看到），照上文做一张关键超参数的大表。这个模型一共有多少参数？每个训练步多少 FLOPs？训练 15T token 一共多少 FLOPs？
 
-(b) Assume we want to train on 8 TPU v5p pods. What parallelism scheme would we use? How long would training take? Would we be compute or comms bound?
+(b) 假设要在 8 个 TPU v5p 整机群上训练。该用什么并行方案？训练要多久？会是计算受限还是通信受限？
 
-<h3 markdown=1 class="next-section">That's all for Section 6. For Section 7, about Transformer inference, click [here](../inference).</h3>
+<h3 markdown=1 class="next-section">第 6 部分到此结束！第 7 部分讲 Transformer 推理，[点击这里](../inference)。</h3>
