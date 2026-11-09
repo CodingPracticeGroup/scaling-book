@@ -1,8 +1,8 @@
 ---
 layout: distill
-title: "All About Rooflines"
+title: "漫谈 Roofline"
 # permalink: /main/
-description: "When we run algorithms on hardware, we're bounded by three things: how fast our computer can do math (OPs/second), the bandwidth available for moving data around (bytes/second), and the total memory available to store data (bytes). These \"roofline\" constraints let us upper and lower bound the time of a given computation."
+description: "当我们在硬件上运行算法时，会受到三样东西的限制：计算机做数学运算的速度（OPs/秒）、搬运数据可用的带宽（字节/秒），以及可用于存数据的总内存（字节）。这些“roofline”式约束让我们能够给出一次给定计算耗时的上下界。"
 date: 2025-02-04
 future: true
 htmlwidgets: true
@@ -11,10 +11,10 @@ hidden: false
 section_number: 1
 
 previous_section_url: ".."
-previous_section_name: "Part 0: Introduction"
+previous_section_name: "第 0 部分 · 引言"
 
 next_section_url: ../tpus
-next_section_name: "Part 2: TPUs"
+next_section_name: "第 2 部分 · 漫谈 TPU"
 
 bibliography: main.bib
 
@@ -53,12 +53,12 @@ authors:
 #   - please use this format rather than manually creating a markdown table of contents.
 toc:
 
-  - name: Where Does the Time Go?
+  - name: 时间都花到哪里去了？
   - subsections:
-    - name: "Visualizing rooflines"
-    - name: "Matrix multiplication"
-    - name: "Network communication rooflines"
-  - name: A Few Problems to Work
+    - name: "Roofline 的可视化"
+    - name: "矩阵乘法"
+    - name: "网络通信 roofline"
+  - name: 一些练习题
 
 # Below is an example of injecting additional post-specific styles.
 # This is used in the 'Layouts' section of this post.
@@ -80,29 +80,29 @@ _styles: >
   }
 ---
 
-## Where Does the Time Go?
+## 时间都花到哪里去了？
 
-Let's start with an extremely simple question: *why does an algorithm take 50ms instead of 50s or 5ms*? What is actually happening within the model that takes substantial time and how long should we expect it to take?
+从一个极简单的问题开始：*为什么某个算法要花 50 毫秒，而不是 50 秒或者 5 毫秒*？模型里到底是哪部分在吃时间、它本该吃多久？
 
-**Computation:** A deep learning model is effectively a bunch of matrix multiplications, each composed of floating-point multiplication and addition 'operations' (FLOPs). Our accelerator speed determines how long these take to compute:
+**计算：** 深度学习模型拆开看，就是一大堆矩阵乘法；每个矩阵乘法都由浮点的乘法和加法“操作”（FLOPs）组成。计算器一秒能算多少次，就决定了这一步要跑多久：
 
 $$\begin{equation}
 T_\text{math} = \frac{\text{Computation FLOPs}}{\text{Accelerator FLOPs/s}}
 \end{equation}$$
 
-For instance, an NVIDIA H100 can perform about 9.89e14 bfloat16<d-footnote>bf16 is short for <a href="https://en.wikipedia.org/wiki/Bfloat16_floating-point_format">bfloat16</a>, a 16-bit floating point format often used in ML.</d-footnote> FLOPs/s while a TPU v6e can perform 9.1e14 FLOPs/s.<d-footnote>H100s and B200s can usually only achieve around 80-85% of the claimed peak FLOPs, while TPUs can get closer to 95% in normal use.</d-footnote> That means doing 1e12 FLOPs on an H100 will take (roughly) `1e12 / 9.89e14 = 1.01ms` and `1e12 / 9.1e14 = 1.1ms` on a TPU v6e.<d-footnote>Note that these chips are priced differently, and this comparison does not normalize to cost.</d-footnote>
+举个例子：一块 NVIDIA H100 一秒能做约 9.89e14 个 bfloat16 FLOPs<d-footnote>bf16 是 <a href="https://en.wikipedia.org/wiki/Bfloat16_floating-point_format">bfloat16</a> 的缩写，一种常用于机器学习的 16 位浮点格式。</d-footnote>，TPU v6e 一秒能做约 9.1e14 个。<d-footnote>H100 和 B200 通常只能达到标称峰值 FLOPs 的约 80-85%，而 TPU 在正常使用下能接近 95%。</d-footnote> 也就是说，做 `1e12` 个 FLOPs，在 H100 上大约要 `1e12 / 9.89e14 = 1.01ms`，在 TPU v6e 上要 `1e12 / 9.1e14 = 1.1ms`。<d-footnote>注意这些芯片的定价不同，这个比较没有按成本归一化。</d-footnote>
 
-**Communication within a chip:** *Within an accelerator*, tensors need to be transferred between accelerator memory (HBM) and the compute cores. You'll see the bandwidth of this link referred to as "HBM bandwidth".<d-footnote>NVIDIA also calls this "memory bandwidth."</d-footnote> On an H100, [this is about 3.35TB/s](https://www.nvidia.com/en-us/data-center/h100/) and on TPU v6e [this is about 1.6TB/s](https://cloud.google.com/tpu/docs/v6e).
+**片内通信：** *在一块加速器内部*，数据要在加速器的内存（HBM）和计算核心之间来回搬。这条“搬运通道”的带宽，就叫“HBM 带宽”。<d-footnote>NVIDIA 也称其为“memory bandwidth”（内存带宽）。</d-footnote> 在 H100 上，[这大约是 3.35TB/s](https://www.nvidia.com/en-us/data-center/h100/)，在 TPU v6e 上[这大约是 1.6TB/s](https://cloud.google.com/tpu/docs/v6e)。
 
-**Communication between chips:**  When we distribute a model *across* multiple accelerators, tensors frequently need to be transferred between them. There are often a few options for this on our hardware (ICI, DCN, and PCIe), each with different bandwidths.
+**芯片间通信：** 当我们把一个模型分布到*多块*加速器上时，张量经常需要在它们之间搬运。硬件上这通常有几种选择（ICI、DCN 和 PCIe），各自带宽不同。
 
-Whether the communication is within a chip or between chips, we measure this in bytes/s and estimate the total communication time with:
+无论是片内还是片间通信，我们都以 字节/秒 来衡量它，并用下式估算总的通信时间：
 
 $$\begin{equation}
 T_\text{comms} = \frac{\text{Communication Bytes}}{\text{Network/Memory Bandwidth Bytes/s}}
 \end{equation}$$
 
-Typically (but not always), computation within a single chip can be overlapped with communication within a chip and between chips. This means **we can lower-bound training and inference time by using the maximum of computation and communication time**. We can also **upper-bound with their sum**. In practice, we optimize against the maximum as the algebra is simpler and we can usually come close to this bound by overlapping our communication and computation. If we optimize with the maximum in mind then the lower and upper bounds differ by at most a factor of 2 since $T_\text{math} + T_\text{comms} \leq 2 * \max(T_\text{math}, T_\text{comms})$. We then increase accuracy beyond this by modeling 'overlap regions' and overheads, which can be informed by profiling your specific model and target system.
+通常（虽有例外），计算可以和片内、片间的通信同时进行、互相打掩护。这意味着**取计算时间和通信时间里较大的那个，就能给训练和推理时间定一个下界**；**把两者相加，则得到一个上界**。实践中我们按下界来优化：一是这样算起来简单，二是只要让通信躲在计算背后进行，通常就真能跑到那么快。按最大值来算，上下界至多差 2 倍，因为 $T_\text{math} + T_\text{comms} \leq 2 * \max(T_\text{math}, T_\text{comms})$。之后我们再靠建模“重叠区间”和各类开销来算得更准——这些可以对你的模型和目标系统做性能剖析（profiling）拿到。
 
 $$\begin{equation}
 T_\text{lower}=\max(T_\text{math}, T_\text{comms})
@@ -112,15 +112,15 @@ $$\begin{equation}
 T_\text{upper} = T_\text{math} + T_\text{comms}
 \end{equation}$$
 
-If we assume we can perfectly overlap communication and computation, when $T_\text{math} > T_\text{comms}$, we see full utilization from our hardware. We call this being "compute-bound". When $T_\text{comms} > T_\text{math}$, we tend to be "communication-bound"<d-footnote>We'll use "communication-bound", "comms-bound", "memory-bound", and "bandwidth-bound" interchangeably throughout this book.</d-footnote> and at least some fraction of our accelerator FLOPs/s is wasted waiting for data to be passed around. One way to tell if an operation will be compute or communication-bound is to look at its "**arithmetic intensity**" or "**operational intensity**".
+假设通信和计算真能完美配合，那么当 $T_\text{math} > T_\text{comms}$ 时，硬件就是满载的，我们叫它“计算受限（compute-bound）”。反过来 $T_\text{comms} > T_\text{math}$ 时，就是“通信受限（communication-bound）”<d-footnote>在本书中，“communication-bound”“comms-bound”“memory-bound” 和 “bandwidth-bound” 会交替使用。</d-footnote>——算力中至少有一部分，白白耗在了等数据上。要判断一个操作属于哪种，可以看它的“**算术强度（arithmetic intensity）**”，也叫“**操作强度（operational intensity）**”。
 
-**Definition:** the arithmetic intensity of an algorithm is given by the ratio of the total FLOPs it performs to the number of bytes it needs to communicate — either within a chip or between chips.
+**定义：** 一个算法的算术强度等于它所执行的总 FLOPs 与它需要通信的字节数（无论是片内还是片间）之比。
 
 $$\begin{equation}
 \text{Arithmetic Intensity} = \frac{\text{Computation FLOPs}}{\text{Communication Bytes}}
 \end{equation}$$
 
-Arithmetic intensity measures the "FLOPs per byte" of a given operation. To a first order, when our arithmetic intensity is high, $T_\text{math}$ is large compared to $T_\text{comms}$ and we typically use most of the available FLOPs. When the opposite is true, we spend more time on comms and waste FLOPs. The point where this crossover happens is the "peak arithmetic intensity" of our hardware, the ratio of peak accelerator FLOPs/s to accelerator bandwidth.
+算术强度说的就是“每搬一个字节，能换来几次浮点运算”。简单讲：强度越高，$T_\text{math}$ 相对 $T_\text{comms}$ 就越大，算力通常能被充分用起来；强度越低，时间就越多地耗在通信上，算力跟着闲置。从“够用”翻到“不够用”的那个临界点，叫硬件的“峰值算术强度”——拿峰值算力除以内存带宽就得到它。
 
 $$\begin{align*}
 T_\text{math} > T_\text{comms} \Leftrightarrow \frac{\text{Computation FLOPs}} {\text{Accelerator FLOPs/s}} > \frac{\text{Communication Bytes}}{\text{Bandwidth Bytes/s}} & \\[0.5em]
@@ -128,32 +128,32 @@ T_\text{math} > T_\text{comms} \Leftrightarrow \frac{\text{Computation FLOPs}} {
 \Leftrightarrow \text{Intensity}(\text{Computation}) > \text{Intensity}(\text{Accelerator}) & \\
 \end{align*}$$
 
-The quantity $\text{Intensity}(\text{Accelerator})$ is the arithmetic intensity at which our accelerator achieves its peak FLOPs/s. **For the TPU v5e MXU, this is about 240 FLOPs/byte**, since the TPU can perform `1.97e14` FLOPs/s and load `8.2e11` bytes/s from HBM.<d-footnote>The MXU is the matrix multiply unit on the TPU. We specify this here because the TPU has other accelerators like the VPU that are responsible for elementwise operations that have a different peak FLOPs/s.</d-footnote> That means if an algorithm has a lower arithmetic intensity than 240 FLOPs/byte, it will be bound by byte loading and thus we won't make good use of our hardware.<d-footnote>This is only true if the algorithm loads its weights from HBM and runs in the MXU. As we'll discuss in the next section, we can sometimes store parameters in VMEM which has a much higher bandwidth. Many algorithms also run in the VPU, which has different performance characteristics.</d-footnote> Let's look at one such example:
+量 $\text{Intensity}(\text{Accelerator})$ 是使加速器达到峰值 FLOPs/s 的算术强度。**对于 TPU v5e 的 MXU，这约为 240 FLOPs/字节**，因为该 TPU 能以 `1.97e14` FLOPs/s 运行，并能以 `8.2e11` 字节/s 从 HBM 载入数据。<d-footnote>MXU 是 TPU 上的矩阵乘法单元。这里特别指明，是因为 TPU 还有别的加速器，比如负责逐元素操作、峰值 FLOPs/s 不同的 VPU。</d-footnote> 也就是说，如果一个算法的算术强度低于 240 FLOPs/字节，它就会受字节加载的限制，因此我们无法好好利用硬件。<d-footnote>这只在算法从 HBM 读取权重并在 MXU 上运行时成立。正如我们下一节会讨论的，有时我们能把参数存放在带宽高得多的 VMEM 里。许多算法还会运行在 VPU 上，其性能特性各不相同。</d-footnote> 我们来看一个这样的例子：
 
-**<span style="color:#7ab5ff">Example (dot product)</span>:** to compute the dot product of two vectors in bfloat16 precision, `x • y: bf16[N], bf16[N] → bf16[1]`, we need to load $x$ and $y$ from memory, each of which has $2 * N = 2N$ bytes, perform $N$ multiplications and $N-1$ additions, and write $2$ bytes back into HBM
+**<span style="color:#7ab5ff">示例（点积）：</span>** 要以 bfloat16 精度计算两个向量的点积 `x • y: bf16[N], bf16[N] → bf16[1]`，我们需要从内存载入 $x$ 和 $y$，每个都有 $2 * N = 2N$ 字节，执行 $N$ 次乘法和 $N-1$ 次加法，并写回 $2$ 字节到 HBM
 $$\begin{equation}
 \text{Intensity}(\text{dot product}) = \frac{\text{Total FLOPs}}{\text{Total Bytes}} = \frac{N + N - 1}{2N + 2N + 2} = \frac{2N - 1}{4N + 2} \rightarrow \frac{1}{2}
 \end{equation}$$
 
-as $N\rightarrow\infty$. So the dot product has an arithmetic intensity of $\frac{1}{2}$ or, put another way, the dot product does 0.5 floating point operations per byte loaded. This means our arithmetic intensity is lower than that of our hardware and we will be communication-bound.<d-footnote>The 240 number above is not the correct comparison here since, as you will see in the next section, a dot-product is performed on the VPU and not the MXU. The TPU v5p VPU can do roughly 7e12 FLOPs / second per core, so its critical intensity is around 3, which means we are still somewhat comms-bound here. Either way, the fact that our intensity is low and constant means it is difficult to be compute-bound on most hardware.</d-footnote>
+令 $N\rightarrow\infty$ 取极限。也就是说，点积的算术强度只有 $\frac{1}{2}$：每从内存搬一个字节，只换来 0.5 次浮点运算。这比硬件的算术强度低得多，所以点积注定是通信受限的。<d-footnote>上面那个 240 在这里并不是正确的比较对象，因为正如你将在下一节看到的，点积是在 VPU 而非 MXU 上执行的。TPU v5p 的 VPU 每核大约能做 7e12 FLOPs / 秒，所以它的临界强度约为 3，这意味着我们在这里仍然有些通信受限。无论哪种情况，我们的强度都既低又是常数，这意味着在大多数硬件上都很难做到计算受限。</d-footnote>
 
-### Visualizing rooflines
+### Roofline 的可视化
 
-We can visualize the tradeoff between memory and compute using a **roofline plot**, which plots the peak achievable FLOPs/s (throughput) of an algorithm on our hardware (the y-axis) against the arithmetic intensity of that algorithm (the x-axis). Here's an example log-log plot:
+我们可以用 **roofline 图**把内存和计算之间的这层关系画出来：纵轴是某个算法在我们硬件上能跑出的峰值 FLOPs/s（也就是吞吐量），横轴是这个算法的算术强度。每个算法都能在这张图上占一个点。下面是一张对数-对数（log-log）坐标的示例图：
 
-{% include figure.liquid path="assets/img/roofline-improved.png" class="img-fluid" caption="<b>Figure:</b> an example roofline plot showing two algorithms with different arithmetic intensities (Algo 1 and Algo 2) and their corresponding theoretical peak throughput under different bandwidths (BW1 and BW2). In the red area, an algorithm is bandwidth bound at both bandwidths and is wasting some fraction of the hardware's peak FLOPs/s. The yellow area is bandwidth-bound only at the lower bandwidth (BW1). The green area is compute-bound at all bandwidths. Here, we are using the peak FLOPs/s of the accelerator and increasing bandwidth or improving intensity yield no benefit." %}
+{% include figure.liquid path="assets/img/roofline-improved.png" class="img-fluid" caption="<b>图：</b>一个 roofline 图示例，展示了两个具有不同算术强度的算法（Algo 1 与 Algo 2），以及它们在不同带宽（BW1 与 BW2）下对应的理论峰值吞吐量。红色区域中，算法在两种带宽下都是带宽受限的，浪费了硬件峰值 FLOPs/s 的一部分。黄色区域只在较低带宽（BW1）下是带宽受限的。绿色区域在所有带宽下都是计算受限的。这里我们使用的是加速器的峰值 FLOPs/s，增加带宽或提高强度都不会带来收益。" %}
 
-Above, as the intensity increases (moving left to right), we initially see a linear increase in the performance of our algorithm (in FLOPs/s) until we hit the critical arithmetic intensity of the hardware, 240 in the case of the TPU v5e. Any algorithm with a lower intensity will be bandwidth (BW) bound and limited by the peak memory bandwidth (shown in red). Any algorithm to the right will fully utilize our FLOPs (shown in green). Here, Algo 1 is comms-bound and uses only a fraction of the total hardware FLOPs/s. Algo 2 is compute-bound. We can generally improve the performance of an algorithm either by increasing its arithmetic intensity or by increasing the memory bandwidth available (moving from BW1 to BW2).
+如上图，随着强度增大（从左往右），我们起初会看到算法性能（以 FLOPs/s 计）线性上升，直到撞上硬件的临界算术强度——对 TPU v5e 而言是 240。任何强度更低的算法都会受带宽（BW）限制，被峰值内存带宽卡住（图中红色）。任何更靠右的算法都会充分利用我们的 FLOPs（图中绿色）。这里，Algo 1 是通信受限的，只用到了硬件总 FLOPs/s 的一小部分；Algo 2 是计算受限的。我们通常可以通过提高算法的算术强度、或提高可用的内存带宽（从 BW1 变到 BW2）来改善一个算法的性能。
 
-### Matrix multiplication
+### 矩阵乘法
 
-Let's look at our soon-to-be favorite algorithm: matrix multiplication (aka matmul). Given two matrices $X$ and $Y$, we can write $X * Y \rightarrow Z$ where $X$ has shape $\text{bf16}[B, D]$, $Y$ has shape $\text{bf16}[D, F]$, and $Z$ has shape $\text{bf16}[B, F]$. To do the matmul we need to load $2DF + 2BD$ bytes, perform $2BDF$ FLOPs, and write $2BF$ bytes back.<d-footnote>Technically we perform $BF \times (2D - 1)$ FLOPs but this is close enough. This comes from $BDF$ multiplications and $BF * (D-1)$ additions. Section 4 has more details.</d-footnote> <d-footnote>Although the output of a matmul is technically float32 we usually cast down to bfloat16 before copying back to HBM.</d-footnote> Thus:
+我们来看接下来将成为我们最爱的算法：矩阵乘法（简称 matmul）。给定两个矩阵 $X$ 和 $Y$，我们可以写作 $X * Y \rightarrow Z$，其中 $X$ 的形状是 $\text{bf16}[B, D]$，$Y$ 的形状是 $\text{bf16}[D, F]$，$Z$ 的形状是 $\text{bf16}[B, F]$。要做这个 matmul，我们需要载入 $2DF + 2BD$ 字节，执行 $2BDF$ FLOPs，并写回 $2BF$ 字节。<d-footnote>严格地说，我们执行的是 $BF \times (2D - 1)$ 次 FLOPs，但这已经足够接近。它来自 $BDF$ 次乘法和 $BF * (D-1)$ 次加法。第 4 节有更多细节。</d-footnote> <d-footnote>尽管 matmul 的输出严格来说是 float32，我们通常会在拷回 HBM 前把它下转型（downcast）成 bfloat16。</d-footnote> 于是：
 
 $$\begin{equation}
 \text{Intensity}(\text{matmul}) = \frac{2BDF}{2BD + 2DF + 2BF} = \frac{BDF}{BD + DF + BF}
 \end{equation}$$
 
-We can get a nice simplification if we assume our "batch size" $B$ is small relative to $D$ and $F$. Then we get
+如果我们假设“批大小（batch size）” $B$ 相对于 $D$ 和 $F$ 很小，就能得到一个很简洁的简化。于是我们得到
 
 $$\begin{equation}
 \frac{BDF}{BD + DF + BF} \approx \frac{BDF}{DF} = B
@@ -163,67 +163,67 @@ $$\begin{equation}
 \text{Intensity}(\text{matmul}) > \text{Intensity}(\text{TPU}) \implies B > \frac{1.97e14}{8.20e11} = 240
 \end{equation}$$
 
-This is a reasonable assumption for Transformer matmuls since we typically have a local (per-replica) token batch size $B < 1024$ (*note, not sequences*) but $D$ and $F > 8000$. Thus we generally become compute-bound when our per-replica<d-footnote>We say per-replica because, if we do some kind of model sharding to increase the number of chips used in the matmul, we scale both our available compute and memory bandwidth by the same amount. Thus the critical batch size is true per independent copy of the model weights.</d-footnote> batch size is greater than 240 tokens, a very simple rule!
+对 Transformer 的 matmul 来说，这是一个合理的假设，因为我们通常的本地（每个副本 per-replica）token 批大小 $B < 1024$（*注意，不是序列数 sequences*），而 $D$ 和 $F > 8000$。因此，当我们每个副本的<d-footnote>我们说每个副本，是因为如果我们通过某种模型分片来增加参与 matmul 的芯片数，我们的可用计算和内存带宽会按同一比例一起放大。所以这个临界批大小是针对每一份独立的模型权重副本而言的。</d-footnote> 批大小大于 240 个 token 时，我们通常就会变成计算受限——一条非常简单的规则！
 
-<p markdown=1 class="takeaway">**Takeaway:** for a bfloat16 matmul to be compute-bound on most TPUs, we need our batch size to be greater than 240 (tokens).<d-footnote>Note that this is _not_ the batch size in the usual sense, where it means the batch size in sequences. It turns out most rooflines depend purely on the number of tokens, whether they belong to the same or different sequences. For instance if you have a batch size of 512 sequences of 4096 tokens on 2048 GPUs, you have a total batch size of `512 * 4096 = 2M` tokens, and a local batch size of 1k tokens.</d-footnote></p>
+<p markdown=1 class="takeaway">**要点：** 要让一个 bfloat16 的 matmul 在大多数 TPU 上变成计算受限，我们的批大小需要大于 240（个 token）。<d-footnote>注意这**不是**通常意义上的批大小（即按序列数计的批大小）。事实证明，大多数 roofline 只取决于 token 的数量，而不管它们属于同一序列还是不同序列。例如，如果你有 512 条序列、每条 4096 个 token，分布在 2048 块 GPU 上，那么你的总批大小是 `512 * 4096 = 2M` 个 token，本地批大小则是 1k 个 token。</d-footnote></p>
 
-This comes with a few notable caveats we'll explore in the problems below, particularly with respect to quantization (e.g., if we quantize our activations but still do full-precision FLOPs), but it's a good rule to remember. For GPUs, this number is slightly higher (closer to 300), but the same conclusion generally holds. When we [decompose a big matmul into smaller matmuls](https://docs.jax.dev/en/latest/pallas/tpu/matmul.html#your-first-matrix-multiplication-kernel), the tile sizes also matter.<d-footnote>When we do a large matrix multiplication, we need to break it down into smaller tiles which fit into VMEM/SMEM/TMEM, the higher-bandwidth on-chip memory. This causes us to load chunks multiple times, so it's no longer quite true that we only load $O(N^2)$ bytes. Consider an $(m, k) \cdot (k, n)$ matmul with tile sizes $bm$, $bk$, $bn$. Let $tm = m / bm$, etc. Then the total FLOPs is $2 \cdot tm \cdot tn \cdot tk \cdot bm \cdot bn \cdot bk$ and the total bytes are $2 \cdot tm \cdot tn \cdot (tk \cdot (bm \cdot bk + bk \cdot bn) + bm \cdot bn)$. Ignoring the last term, we have an intensity of $bm \cdot bn / (bm + bn)$, which is similar to the above.</d-footnote> We'll discuss the lower-level GPU and TPU details in the [next section](../tpus).
+这条规则有几个值得注意的例外，我们会在下面的练习题里探讨，尤其是量化方面（例如，如果我们量化了激活值但仍做全精度的 FLOPs），但它是一条值得记住的好规则。对 GPU 而言，这个数字会稍高一些（接近 300），但同样的结论总体成立。当我们[把一个大 matmul 分解成多个小 matmul](https://docs.jax.dev/en/latest/pallas/tpu/matmul.html#your-first-matrix-multiplication-kernel)时，tile 大小也很重要。<d-footnote>当我们做一次大矩阵乘法时，需要把它拆成能放进 VMEM/SMEM/TMEM（带宽更高的片上内存）的小 tile。这会导致我们多次载入数据块，因此“我们只载入 $O(N^2)$ 字节”就不再严格成立。考虑一个 $(m, k) \cdot (k, n)$ 的 matmul，tile 大小为 $bm$、$bk$、$bn$。令 $tm = m / bm$，以此类推。那么总 FLOPs 是 $2 \cdot tm \cdot tn \cdot tk \cdot bm \cdot bn \cdot bk$，总字节数是 $2 \cdot tm \cdot tn \cdot (tk \cdot (bm \cdot bk + bk \cdot bn) + bm \cdot bn)$。忽略最后一项，我们得到的强度为 $bm \cdot bn / (bm + bn)$，与上面的形式类似。</d-footnote> 我们会在[下一节](../tpus)讨论更底层的 GPU 和 TPU 细节。
 
-### Network communication rooflines
+### 网络通信 roofline
 
-All the rooflines we've discussed so far have been memory-bandwidth rooflines, _all within a single chip_. This shouldn't be taken as a rule. In fact, most of the rooflines we'll care about in this book involve communication between chips: usually matrix multiplications that involve matrices sharded across multiple TPUs.
+到目前为止，我们算的都是内存带宽的 roofline，*全都发生在单块芯片之内*。但别把这当成天经地义。实际上，本书真正关心的大多数 roofline 都涉及芯片之间的通信——多半是那种矩阵被拆到多块 TPU 上做的 matmul。
 
-To pick a somewhat contrived example, say we want to multiply two big matrices $X\sim \text{bf16}[B, D]$ and $Y \sim \text{bf16}[D, F]$ which are split evenly across 2 TPUs/GPUs (along the $D$ dimension). To do this multiplication (as we'll see in [Section 3](../sharding)), we can multiply half of each matrix on each TPU (`Z0 = X[:, :D // 2] @ Y[:D // 2, :]` on TPU 0 and `Z1 = X[:, D // 2:] @ Y[D // 2:, :]` on TPU 1) and then copy the resulting "partial sums" to the other TPU and add them together. Say we can copy `4.5e10` bytes/s in each direction and perform `1.97e14` FLOPs/s on each chip. What are $T_\text{math}$ and $T_\text{comms}$?
+这里做个略人造的小例子：想相乘两个大矩阵 $X\sim \text{bf16}[B, D]$ 和 $Y \sim \text{bf16}[D, F]$，它们沿 $D$ 维被均分给了 2 块 TPU/GPU。要做这个乘法（做法我们在[第 3 节](../sharding)会细讲），可以每块 TPU 各算一半：TPU 0 算 `Z0 = X[:, :D // 2] @ Y[:D // 2, :]`，TPU 1 算 `Z1 = X[:, D // 2:] @ Y[D // 2:, :]`，再把各自的“部分和（partial sums）”发给对方、加在一起。假设拷贝带宽每个方向 `4.5e10` 字节/s，每块芯片算力 `1.97e14` FLOPs/s。那么 $T_\text{math}$ 和 $T_\text{comms}$ 各是多少？
 
-$T_\text{math}$ is clearly half of what it was before, since each TPU is doing half the work, i.e.<d-footnote>We're ignoring the FLOPs required to add the two partial sums together (another BF addition), but this is basically negligible.</d-footnote>
+$T_\text{math}$ 显然只有之前的一半，因为每块 TPU 只做一半的工作，即<d-footnote>我们忽略了把两个部分和相加所需的 FLOPs（又是 BF 次加法），但这基本可以忽略。</d-footnote>
 
 $$T_\text{math} = \frac{2BDF}{2 \cdot \text{Accelerator FLOPs/s}} = \frac{BDF}{1.97e14}$$
 
-Now what about $T_\text{comms}$? This now refers to the communication time between chips! This is just the total bytes sent divided by the network bandwidth, i.e.
+那 $T_\text{comms}$ 呢？现在它指的是芯片之间的通信时间！这就是发送的总字节数除以网络带宽，即
 
 $$T_\text{comms} = \frac{2BF}{\text{Network Bandwidth}} = \frac{2BF}{4.5e10}$$
 
-Therefore we become compute-bound (now with respect to the inter-chip network) when $$\text{Intensity}(\text{matmul (2-chips)}) > \text{Intensity}(\text{TPU w.r.t. inter-chip network})$$ or equivalently when $\frac{BDF}{2BF} = \frac{D}{2} > \frac{1.97e14}{4.5e10} = 4377$ or $D > 8755$. Note that, unlike before, the critical threshold now depends on $D$ and not $B$! Try to think why that is. This is just one such example, but we highlight that this kind of roofline is critical to knowing when we can parallelize an operation across multiple TPUs.
+因此，当我们有 $$\text{Intensity}(\text{matmul (2-chips)}) > \text{Intensity}(\text{TPU w.r.t. inter-chip network})$$ 时，或者说等价地当 $\frac{BDF}{2BF} = \frac{D}{2} > \frac{1.97e14}{4.5e10} = 4377$（即 $D > 8755$）时，我们就变成计算受限的（此时是相对于芯片间网络而言）。注意，与之前不同，临界阈值现在取决于 $D$ 而不是 $B$！试着想想这是为什么。这只是一个这样的例子，但我们想强调的是，这类 roofline 对于判断我们何时能把一个操作并行到多块 TPU 上至关重要。
 
-## A Few Problems to Work
+## 一些练习题
 
-**Question 1 [int8 matmul]:** Say we want to do the matmul $X[B, D] \cdot_D Y[D, F] \rightarrow Z[B, F]$<d-footnote>Here and throughout we'll use the notation $A \cdot_D B$ to indicate that the multiplication is performing a contraction over the D dimension. This is an abuse of einsum notation.</d-footnote> in int8 precision (1 byte per parameter) instead of bfloat16 (2 bytes per parameter) since TPUs/GPUs can do matmuls faster in lower precision.
+**问题 1 [int8 matmul]：** 假设我们想以 int8 精度（每个参数 1 字节）而非 bfloat16（每个参数 2 字节）来做 matmul $X[B, D] \cdot_D Y[D, F] \rightarrow Z[B, F]$<d-footnote>在此及全书中，我们用记号 $A \cdot_D B$ 来表示这次乘法是沿 D 维做收缩（contraction）。这是对 einsum 记号的一种借用（不严谨用法）。</d-footnote>，因为 TPU/GPU 在更低精度下做 matmul 更快。
 
-1. How many bytes need to be loaded from memory? How many need to be written back to memory?
-2. How many total OPs are performed?
-3. What is the arithmetic intensity?
-4. What is a roofline estimate for $T_\text{math}$ and $T_\text{comms}$? What are reasonable upper and lower bounds for the runtime of the whole operation?
+1. 需要从内存载入多少字节？需要写回多少字节？
+2. 总共执行了多少次 OP？
+3. 算术强度是多少？
+4. 对 $T_\text{math}$ 和 $T_\text{comms}$ 做一个 roofline 估计？整个运行时的合理上下界是什么？
 
-Assume our HBM bandwidth is `8.2e11` bytes/s and our int8 peak OPs/s is `3.94e14` (about 2x bfloat16).
+假设我们的 HBM 带宽是 `8.2e11` 字节/s，int8 峰值 OPs/s 是 `3.94e14`（约为 bfloat16 的 2 倍）。
 
-{% details Click here for the answer. %}
+{% details 点此查看答案。 %}
 
-1. Because we're storing our parameters in int8, we have 1 byte per parameter, so we have $$BD + DF$$ bytes loaded from HBM and $$BF$$ written back.
-2. This is the same as in bfloat16, but in theory int8 OPs/s should be faster. So this is still $2BDF$ OPs.
-3. Arithmetic intensity is $$2BDF / (BD + DF + BF)$$. If we make the same assumption as above about $$B \ll D$$ and $$B \ll F$$, we get an arithmetic intensity of $$2B$$, meaning our rule becomes $B > \text{HBM int8 arithmetic intensity} / 2$. Using the numbers given, this int8 intensity is `3.94e14 / 8.2e11 = 480`, so the rule is $B > 480 / 2 = 240$. Note that this is basically unchanged!
-4. $$T_\text{math} = 2BDF / 3.94e14$$ and $$T_\text{comms} = (BD + DF + BF) / 8.2e11$$, so a reasonable lower bound is $$\max(T_\text{math}, T_\text{comms})$$ and an upper bound is $$T_\text{math} + T_\text{comms}$$.
-
-{% enddetails %}
-
-**Question 2 [int8 + bf16 matmul]:** In practice we often do different weight vs. activation quantization, so we might store our weights in very low precision but keep activations (and compute) in a higher precision. Say we want to quantize our weights in int8 but keep activations (and compute) in bfloat16. At what batch size do we become compute bound? Assume `1.97e14` bfloat16 FLOPs/s.
-
-*Hint: this means specifically `bf16[B, D] * int8[D, F] -> bf16[B, F]` where $B$ is the "batch size".*
-
-{% details Click here for the answer. %}
-
-Again assuming B is small, we have 2BDF bfloat16 FLOPs but only DF weights (instead of 2DF in bfloat16). This means we become compute-bound when $$2B > 240$$ or $$B > 120$$. This is a lot lower, meaning if we can do int8 weight quantization (which is fairly easy to do) but still do bfloat16 FLOPs, we get a meaningful win in efficiency (although int8 OPs would be better).
+1. 因为我们的参数以 int8 存放，每个参数 1 字节，所以我们从 HBM 载入 $$BD + DF$$ 字节，写回 $$BF$$ 字节。
+2. 这与 bfloat16 相同，但理论上 int8 OPs/s 应该更快。所以这仍然是 $2BDF$ 次 OP。
+3. 算术强度是 $$2BDF / (BD + DF + BF)$$。如果我们沿用上面关于 $$B \ll D$$ 和 $$B \ll F$$ 的假设，得到的算术强度就是 $$2B$$，于是我们的规则变成 $B > \text{HBM int8 算术强度} / 2$。用给出的数字，这个 int8 强度是 `3.94e14 / 8.2e11 = 480`，所以规则是 $B > 480 / 2 = 240$。注意这基本上没什么变化！
+4. $$T_\text{math} = 2BDF / 3.94e14$$ 且 $$T_\text{comms} = (BD + DF + BF) / 8.2e11$$，因此一个合理的下界是 $$\max(T_\text{math}, T_\text{comms})$$，上界是 $$T_\text{math} + T_\text{comms}$$。
 
 {% enddetails %}
 
-**Question 3:** Taking the setup from Question 2, make a roofline plot of peak FLOPs/s vs. $B$ for $F = D = 4096$ and $F = D = 1024$. *Use the exact number of bytes loaded, not an approximation.*
+**问题 2 [int8 + bf16 matmul]：** 在实践中，我们常常对权重和激活值做不同的量化，所以可能把权重以极低精度存放，而把激活值（和计算）保持较高的精度。假设我们想把权重量化成 int8，但把激活值（和计算）保持为 bfloat16。我们在多大的批大小下会变成计算受限？假设 bfloat16 为 `1.97e14` FLOPs/s。
 
-{% details Click here for the answer. %}
+*提示：这里具体指 `bf16[B, D] * int8[D, F] -> bf16[B, F]`，其中 $B$ 是“批大小”。*
 
-Here is the plot in question:
+{% details 点此查看答案。 %}
+
+同样假设 B 很小，我们有 2BDF 次 bfloat16 FLOPs，但只有 DF 个权重（而不是 bfloat16 下的 2DF）。这意味着当 $$2B > 240$$，即 $$B > 120$$ 时我们就变成计算受限。这个值要低得多，意味着如果我们能做 int8 权重量化（这相当容易做到）但仍做 bfloat16 FLOPs，就能在效率上获得可观的收益（尽管 int8 OP 会更好）。
+
+{% enddetails %}
+
+**问题 3：** 沿用问题 2 的设置，针对 $F = D = 4096$ 和 $F = D = 1024$，画一张峰值 FLOPs/s 关于 $B$ 的 roofline 图。*请使用载入字节的确切数量，不要用近似。*
+
+{% details 点此查看答案。 %}
+
+下面是那张图：
 
 {% include figure.liquid path="assets/img/roofline-plot-q3.png" class="img-fluid img-small" %}
 
-Note that both models eventually achieve the peak hardware FLOPs/s, but the larger D/F achieve it sooner. D=F=1024 almost doubles the critical batch size. The code to generate this figure is here:
+注意两个模型最终都能达到硬件的峰值 FLOPs/s，但更大的 D/F 会更早达到。D=F=1024 几乎让临界批大小翻了一倍。生成这张图的代码在这里：
 
 ```py
 import matplotlib.pyplot as plt
@@ -252,24 +252,24 @@ plt.grid()
 
 {% enddetails %}
 
-**Question 4:** What if we wanted to perform $\text{int8}[B, D] \cdot_D \text{int8}[B, D, F] \rightarrow \text{int8}[B, F]$ where we imagine having a different matrix for each batch element. What is the arithmetic intensity of this operation?
+**问题 4：** 如果我们想做 $\text{int8}[B, D] \cdot_D \text{int8}[B, D, F] \rightarrow \text{int8}[B, F]$，即设想每个批元素都有一个不同的矩阵，会怎样？这个操作的算术强度是多少？
 
-{% details Click here for the answer. %}
+{% details 点此查看答案。 %}
 
-Let's start by looking at the total FLOPs and comms.
+我们先来看总的 FLOPs 和通信量。
 
-1. Total FLOPs: the FLOPs is basically the same, since we're doing $$B$$ independent $$[D] \times [D, F]$$ products, the same total work as a single $$[B, D] \times [D, F]$$ matmul (this is discussed more in Section 4). So this is just $$2BDF$$.
-2. Total comms: we have a lot more comms here: $$BD + BDF + BF$$.
-3. Therefore, our arithmetic intensity is now actually $$2BDF / (BD + BDF + BF)$$. Since $$BDF$$ dominates the denominator, this is roughly $$2$$. So instead of it depending on the batch size, this is essentially constant. This is bad because it means we'll basically always be comms bound no matter what.
-
-{% enddetails %}
-
-**Question 5 [Memory Rooflines for GPUs]:** Using the [spec sheet provided by NVIDIA for the H100 SXM](https://www.nvidia.com/en-us/data-center/h100/), calculate the batch size at which a bfloat16 matrix multiplication will become compute-bound. *Note that the Tensor Core FLOPs numbers are twice the true value since they're only achievable with structured sparsity.*
-
-{% details Click here for the answer. %}
-
-From the spec sheet, we see that the reported bfloat16 FLOPs value is `1.979e15` FLOPs/s with an asterisk noting "with sparsity". The true value is half this without sparsity, i.e. `9.89e14` FLOPs/s. The memory bandwidth is 3.35TB/s, or `3.35e12` bytes / second. Thus $B_\text{crit}$ is `9.89e14 / 3.35e12 = 295`, rather similar to the TPU.
+1. 总 FLOPs：FLOPs 基本相同，因为我们在做 $$B$$ 个独立的 $$[D] \times [D, F]$$ 乘积，其总工作量与单个 $$[B, D] \times [D, F]$$ 的 matmul 相同（这会在第 4 节进一步讨论）。所以这就是 $$2BDF$$。
+2. 总通信量：这里的通信量大得多：$$BD + BDF + BF$$。
+3. 因此，我们的算术强度现在实际上是 $$2BDF / (BD + BDF + BF)$$。由于 $$BDF$$ 在分母中占主导，它大致等于 $$2$$。于是它不再取决于批大小，而是本质上恒定的。这很糟糕，因为这意味着无论怎样我们基本上总会是通信受限的。
 
 {% enddetails %}
 
-<h3 markdown=1 class="next-section">That's it for Part 1! For Part 2, looking at how real TPUs handle FLOPs and communication, [click here](../tpus).</h3>
+**问题 5 [GPU 的内存 roofline]：** 使用 [NVIDIA 提供的 H100 SXM 规格表](https://www.nvidia.com/en-us/data-center/h100/)，计算 bfloat16 矩阵乘法在多大的批大小下会变成计算受限。*注意，由于 Tensor Core FLOPs 的数值只有在结构化稀疏下才能达到，所以它是真实值的两倍。*
+
+{% details 点此查看答案。 %}
+
+从规格表中我们看到，标称的 bfloat16 FLOPs 值是 `1.979e15` FLOPs/s，并带有一个注明“with sparsity”（启用稀疏）的星号。在没有稀疏的真实情况下，这个值是其一半，即 `9.89e14` FLOPs/s。内存带宽是 3.35TB/s，即 `3.35e12` 字节 / 秒。于是 $B_\text{crit}$ 是 `9.89e14 / 3.35e12 = 295`，与 TPU 相当接近。
+
+{% enddetails %}
+
+<h3 markdown=1 class="next-section">第 1 部分到此结束！第 2 部分将看看真实的 TPU 如何处理 FLOPs 与通信，[点击这里](../tpus)。</h3>

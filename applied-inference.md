@@ -1,8 +1,8 @@
 ---
 layout: distill
-title: "Serving LLaMA 3-70B on TPUs"
+title: "在 TPU 上把 LLaMA 3-70B 服务起来"
 # permalink: /main/
-description: "Let's take a close look at how we'd serve LLaMA 3-70B models on TPU v5e. How expensive are different models to serve at roofline? How large are their KV caches? What batch sizes should we use? How are the parameters and activations sharded during inference? Let's work through some back-of-the-envelope estimates for latency and throughput in production."
+description: "让我们近距离看一看：怎么在 TPU v5e 上把 LLaMA 3-70B 服务起来。按屋顶线算，服务一个模型的各种配置分别要花多少钱？KV 缓存有多大？该用多大的批大小？推理时参数和激活怎么分片？让我们来几发“生产级”的纸面估算，把延迟和吞吐都算出来。"
 date: 2025-02-04
 future: true
 htmlwidgets: true
@@ -11,10 +11,10 @@ hidden: false
 section_number: 8
 
 previous_section_url: "../inference"
-previous_section_name: "Part 7: Inference"
+previous_section_name: "第 7 部分 · 推理"
 
 next_section_url: ../profiling
-next_section_name: "Part 9: Profiling"
+next_section_name: "第 9 部分 · 性能剖析"
 
 giscus_comments: true
 giscus_discussion: 10
@@ -50,12 +50,12 @@ authors:
 #     for hyperlinks within the post to work correctly.
 #   - please use this format rather than manually creating a markdown table of contents.
 toc:
-  - name: "What's the LLaMA Serving Story?"
+  - name: "LLaMA 的服务化是怎么一回事？"
   - subsections:
-    - name: "Thinking about throughput"
-    - name: "What about prefill?"
-  - name: "Visualizing the Latency Throughput Tradeoff"
-  - name: "Worked Problems"
+    - name: "想想吞吐量"
+    - name: "预填充呢？"
+  - name: "把“延迟-吞吐”的取舍画出来看"
+  - name: "动手解题"
 
 # Below is an example of injecting additional post-specific styles.
 # This is used in the 'Layouts' section of this post.
@@ -77,13 +77,13 @@ _styles: >
   }
 ---
 
-*This section will look at what it takes to serve LLaMA-3 and how efficiently it can be done. As in the previous "applied" section, try to work out the answers on your own with a pen and paper before looking them up!*
+*这一节我们来看看：要把 LLaMA-3 服务起来需要付出什么、能做得多高效。和上一个“实战”章节一样，请先用纸笔自己算一遍，再点开答案！*
 
-## What's the LLaMA Serving Story?
+## LLaMA 的服务化是怎么一回事？
 
-Let's remind ourselves what LLaMA 3-70B looks like (see [Section 6](../applied-training) for reference):
+先温习一下 LLaMA 3-70B 长什么样（参见[第 6 部分](../applied-training)）：
 
-| **hyperparam**              | **value** |
+| **超参数**                  |  **值**   |
 | --------------------------- | :-------: |
 | $$n_\text{layers}$$ (L)     |    80     |
 | $$d_\text{model}$$ (D)      |   8,192   |
@@ -93,217 +93,217 @@ Let's remind ourselves what LLaMA 3-70B looks like (see [Section 6](../applied-t
 | $$d_\text{qkv}$$ (H)        |    128    |
 | $$n_\text{embeddings}$$ (V) |  128,256  |
 
-Let's start with a simple question: **what hardware should we serve on?** The answer is basically, whichever is cheapest in FLOPs / dollar.<d-footnote>This isn't always true, sometimes more HBM or ICI bandwidth is critical rather than FLOPs, but this is a good heuristic.</d-footnote> For this reason, we typically want to serve on TPU v5e, our current dedicated inference chip (cost comes from [Google Cloud pricing](https://cloud.google.com/tpu/pricing) as of February 2025):
+先从最简单的问题开始：**该用什么硬件来服务？** 答案基本是：每美元能买到最多 FLOPs 的那个<d-footnote>并不总是这样——有时 HBM 容量或 ICI 带宽才是命门，FLOPs/美元反倒次要。但作为启发式，这条很好用。</d-footnote>所以我们通常会选 TPU v5e——我们当前的专职推理芯片（价格取自 2025 年 2 月的 [Google Cloud 价目表](https://cloud.google.com/tpu/pricing)）：
 
-| **TPU type** | **bfloat16 FLOPs/s** | **Google Cloud USD / hour** | **FLOPs / $** |
+| **TPU 型号** | **bfloat16 FLOPs/s** | **Google Cloud 美元 / 小时** | **FLOPs / 美元** |
 | ------------ | :------------------: | :-------------------------: | :-----------: |
 | H100         |        9.9e14        |            $10.8            |    3.3e17     |
 | v5p          |       4.59e14        |            $4.2             |    3.9e17    |
 | v5e          |       1.97e14        |            $1.2             |  **5.8e17**  |
 
-Each TPU v5e has 16GB of HBM which will require us to shard our model fairly aggressively. Let's start by thinking about some basic quantities that might matter for us:
+每块 TPU v5e 只有 16GB HBM，这会逼着我们把模型切得狠一点。先算几个绕不开的基本量：
 
-**Question:** How large are LLaMA 3-70B's KV caches per token? *You can assume we store them in int8. This determines how large our batch size can be on a given topology.*
+**问题：** LLaMA 3-70B 每 token 的 KV 缓存有多大？*可以假设 KV 用 int8 存。这个数决定了给定拓扑下我们的批能做到多大。*
 
-{% details Click here once you've thought it through! %}
+{% details 想过一遍之后再点开！ %}
 
-LLaMA 3-70B has 8 KV heads, so the size per token is `2 * K * H * L = 2 * 8 * 128 * 80 = 160kB`.
+LLaMA 3-70B 有 8 个 KV 头，所以每 token 的大小是 `2 * K * H * L = 2 * 8 * 128 * 80 = 160kB`。
 
-**Note just how big this is!** If we have a sequence length of 32k tokens (as is common), this uses `160e3 * 32,768 = 5.3GB / sequence`. For BS=240, this is 1.3TB! Since TPU v5e only have 16GB a piece, we would need about `(70e9 + 1.3e12) / 16e9 = 86` TPU v5e chips to even fit this much memory. Also note how large this is compared to the 70GB of model parameters.
-
-{% enddetails %}
-
-**Question:** Let's say we want to serve L3 70B at batch size 32 and 8192 sequence length with everything (params and KVs) in int8. How much total memory will this use? What's the smallest slice we could serve this on?
-
-{% details Answer %}
-
-Since our KVs are `160e3` bytes in int8, our total KV memory is `160e3 * 8192 * 32 = 41.9e9` bytes. Our parameters are `70e9` bytes, since we have 1 byte per parameter. Thus, our total memory usage is `41.9e9 + 70e9 = 112GB`.
-
-The smallest slice we could use would have `112e9 / 16e9 = 7` TPUs, or (rounding to an even size), TPU v5e `4x2`. This will be a tight fit and we might not be able to quite fit this accounting for other overhead, so we might need a `4x4` at minimum (or to drop the batch size).
+**感受一下这是多大！** 序列长度取常见的 32k 时，一条序列就要 `160e3 * 32,768 = 5.3GB`。批 240 的话，一共 1.3TB！TPU v5e 每块才 16GB，光是装下这些内存就要 `(70e9 + 1.3e12) / 16e9 = 86` 块。再对比一下：模型参数才 70GB——KV 缓存比参数还大得多。
 
 {% enddetails %}
 
-**Question:** At this batch size and quantization on a TPU v5e `4x2`, roughly what latency would we expect per decode step? What throughput (tokens / sec / chip). What about a `4x4`? *Assume we perform our FLOPs in bfloat16 and everything is fully sharded.*
+**问题：** 假设要以批 32、序列长度 8192 服务 L3 70B，参数和 KV 全用 int8。总共要占多少内存？最小的服务切片是多大？
 
-{% details Answer %}
+{% details 答案 %}
 
-We can invoke the formula from the previous section that
+int8 下 KV 是每 token `160e3` 字节，KV 总内存 `160e3 * 8192 * 32 = 41.9e9` 字节。每个参数 1 字节，参数共 `70e9` 字节。合计 `41.9e9 + 70e9 = 112GB`。
+
+最小的切片是 `112e9 / 16e9 = 7` 块 TPU，向上取整成规整尺寸就是 TPU v5e `4x2`。这会挤得很紧，算上别的开销可能真装不下，所以八成至少要 `4x4`（或者把批调小）。
+
+{% enddetails %}
+
+**问题：** 在这个批大小和量化方式下，在 TPU v5e `4x2` 上每步解码大约什么延迟？吞吐（tokens/秒/芯片）呢？`4x4` 呢？*假设 FLOPs 用 bfloat16 计算，一切都完全分片。*
+
+{% details 答案 %}
+
+直接套上一节的公式：
 
 $$\begin{align*}
 \tiny \text{Theoretical Step Time (General)} = \underbrace{\frac{\text{Batch Size} \times \text{KV Cache Size}}{\tiny \text{Total Memory Bandwidth}}}_{\text{Attention (always bandwidth-bound)}} + \underbrace{\max\left(\frac{2 \times \text{Batch Size} \times \text{Parameter Count}}{\text{Total FLOPs/s}}, \frac{\text{Parameter Size}}{\text{Total Memory Bandwidth}}\right)}_{\tiny \text{MLP (can be compute-bound)}}
 \end{align*}$$
 
-Here our critical batch size will be about 120 since our parameters are in int8 but our FLOPs are in bfloat16. We could also manually calculate the RHS maximum, but that's basically a calculation we've already done several times. **So we're well into the memory-bound regime for both our matmul and our FLOPs.**
+参数是 int8、FLOPs 是 bfloat16，临界批大小约 120。右边那个 max 也可以手动比一遍，但那笔账我们已经算过好几遍了。**总之，无论矩阵乘还是 FLOPs，我们都深陷内存受限区。**
 
-Strictly looking at memory bandwidth then, our step time is basically `(KV size + param size) / (8 * HBM bandwidth) = 112e9 / (8 * 8.2e11) = 17ms`. **So theoretically our step time is about 17ms.** Our throughput would be `32 / .017 = 1882 tokens / sec`, or `1882 / 8 = 235 tokens / sec / chip`.
+只看内存带宽，每步时间就是 `(KV size + param size) / (8 * HBM bandwidth) = 112e9 / (8 * 8.2e11) = 17ms`。**理论上每步约 17ms**，吞吐 `32 / .017 = 1882 tokens / sec`，即每芯片 `1882 / 8 = 235 tokens / sec`。
 
-There's one caveat here which is to check if we might be ICI bound on our matmuls. We could dedicate 2 axes to it here, so we're ICI bound in theory when $Y > 2 * F / 2200 = 2 * 28672 / 2200 = 26$, so we're golden!
+这里有个环节要检查：矩阵乘会不会被 ICI 卡住。这里最多能占用 2 条轴，理论上 ICI 受限的界限是 $Y > 2 * F / 2200 = 2 * 28672 / 2200 = 26$，我们远没到，稳！
 
-If we were to run on a `4x4`, we'd still be fine ICI-wise, so our latency would drop to `17 / 2 = 8.5ms`, but our throughput per-chip would remain the same.
+换到 `4x4` 上，ICI 依然没问题，延迟会降到 `17 / 2 = 8.5ms`，但每芯片吞吐不变。
 
 {% enddetails %}
 
-### Thinking about throughput
+### 想想吞吐量
 
-Let's spend a little time thinking purely about throughput. When we optimize for throughput, we want to be compute bound, meaning we come close to utilizing all the TPU MXU capacity. Typically that means we want the batch size to be as large as possible, so we are doing as much work as possible.
+专门花点时间只想吞吐这一件事。追求吞吐时，我们想进入计算受限状态，把 TPU 的 MXU 榨干。通常这意味着批越大越好——每块芯片干的活越多。
 
-**Question:** On TPU v5e, using bfloat16 weights and activations, how large do our batch sizes need to be for us to be compute-bound in our matmuls? What if we do int8 weights but perform our FLOPs in bfloat16? What about int8 weights with int8 FLOPs?
+**问题：** 在 TPU v5e 上用 bfloat16 权重和激活，批要多大矩阵乘才计算受限？int8 权重、bfloat16 计算呢？int8 权重、int8 计算呢？
 
-{% details Answer %}
+{% details 答案 %}
 
-As discussed in Section 7, for any bfloat16 matmul for which $B \ll D, F$ we have
+第 7 部分讲过，对任何 $B \ll D, F$ 的 bfloat16 矩阵乘，有
 
 $$\begin{equation*}
 T_\text{math} > T_\text{comms} \leftrightarrow \frac{2BDF}{2DF} \geq \frac{\text{TPU bfloat16 FLOPs/s}}{\text{HBM bandwidth}} = 240
 \end{equation*}$$
 
-When our weights are in int8, we lose a factor of 2 in the denominator, so we have $2BDF / DF = 2B > 240$, or equally $B > 120$, half the critical batch size from before. That's really helpful for us! When we do int8 weights and int8 FLOPs, we have to use the int8 value for TPU FLOPs/s, which goes from 1.97e14	for bfloat16 to 3.94e14, nearly double. That means we're back where we started at about $B > 240$.
+权重换成 int8 后，分母少了一个因子 2，于是 $2BDF / DF = 2B > 240$，即 $B > 120$——临界批直接减半，太有帮助了！而 int8 权重配 int8 FLOPs 时，要用 int8 的算力值：TPU 从 bfloat16 的 1.97e14 涨到 3.94e14，几乎翻倍。于是又绕回 $B > 240$。
 
-The case of int8 weights and bfloat16 FLOPs is quite common, since quantizing parameters losslessly is often easier than doing low-precision arithmetic.
+int8 权重 + bfloat16 计算是常见组合：无损量化参数，往往比直接做低精度算术容易得多。
 
 {% enddetails %}
 
-**Question:** What is the smallest TPU v5e topology we could serve LLaMA 3-70B on using bfloat16, int8, and int4 (both KVs and parameters) with 8k context? *You can think of KV caches as negligibly small for this one.*
+**问题：** 用 bfloat16、int8、int4（KV 和参数同精度）在 8k 上下文下服务 LLaMA 3-70B，最小的 TPU v5e 拓扑分别要多大？*这道题里可以把 KV 缓存忽略成零。*
 
-{% details Answer %}
+{% details 答案 %}
 
-This is easy! If we're OK with a tiny batch size then the only limit is fitting parameter memory in HBM, i.e. it is just `ceil(num_params * sizeof(dtype) / HBM per TPU)`, or `ceil(70e9 * sizeof(dtype) / 16e9)` rounded to the nearest reasonable topology (some multiple of 2):
+简单！批小到无所谓的话，唯一的限制是参数装得进 HBM，即 `ceil(num_params * sizeof(dtype) / HBM per TPU)`，再向上取个规整拓扑（2 的倍数）：`ceil(70e9 * sizeof(dtype) / 16e9)`：
 
-| dtype | param size | KV size / token (bytes) | min TPU v5es | actual min slice | remaining HBM for KV caches | num KV caches @ 8k |
+| 精度  | 参数大小 | 每 token KV 大小（字节） | 最少 v5e 数 | 实际最小切片 | 剩余 KV 用 HBM | 8k 下可存 KV 份数 |
 | :---: | :--------: | :---------------------: | :----------: | :--------------: | :-------------------------: | :----------------: |
-| bf16  |   140GB    |          324kB          |     8.75     |  4x4 = 16 chips  |             116             |         43         |
-| int8  |    70GB    |          162kB          |     4.38     |  4x2 = 8 chips   |             58              |         43         |
-| int4  |    35GB    |          81kB           |     2.81     |  2x2 = 4 chips   |             29              |         43         |
+| bf16  |   140GB    |          324kB          |     8.75     |  4x4 = 16 块  |             116             |         43         |
+| int8  |    70GB    |          162kB          |     4.38     |  4x2 = 8 块   |             58              |         43         |
+| int4  |    35GB    |          81kB           |     2.81     |  2x2 = 4 块   |             29              |         43         |
 
-That's pretty cool! It tells us we could fit LLaMA 70B on a TPU v5e 2x2 if we wanted to. Except you'll notice the number of KV caches is very small. That's our batch size! That means we'll be getting terrible FLOPs utilization. We'd be very happy to use a larger topology in order to push our batch size up to 240.
-
-{% enddetails %}
-
-**Question:** Assume we use the largest batch size that fits on these topologies, what latency could we expect for each generate step?
-
-{% details Answer %}
-
-This is also easy, since we're picking our batch size to fill up all our HBM! This is just a question of how long it takes to load a full TPU v5e's worth of bytes into the MXU. This is just `v5e HBM / v5e HBM memory bandwidth = 16GB / 8.2e11 = 19ms`, so this is **19ms / step**. Assuming our generations have a median length of 512 tokens, that is about 9s for each decode. Note that we could get marginally better latency with a smaller batch size, for instance if we only looked at model parameters in int4 our minimum latency is about 10ms / step, since HBM is no longer full.
+挺有意思！也就是说真想塞的话，LLaMA 70B 能挤进一个 TPU v5e 2x2。只是你会注意到“可存 KV 份数”小得可怜——那就是我们的批大小！这意味着 FLOPs 利用率会非常难看。为了把批推到 240，我们完全乐意用更大的拓扑。
 
 {% enddetails %}
 
-<p markdown=1 class="takeaway">**Takeaway**: we can always lower bound decode latency by asking how long it takes to load all the model's parameters from HBM into the MXU. When our KV caches are small, you can think about each layer as just loading the weights chunk-by-chunk and then discarding them. Unless we're using large batch sizes or lots of inter-device comms, this is often a reasonable bound (within 1.5x). When our batch size is bigger, we need to model the KV cache loading as well, since that dominates the parameters.</p>
+**问题：** 假设就用这些拓扑装得下的最大批，每步生成的延迟会是多少？
 
-Likewise, in the FLOPs-bound regime (e.g. training or big-batch inference), we can use the $$\text{Total FLOPs} / (N \cdot C) = 2 \cdot \text{param count} \cdot B / (N \cdot C)$$ lower bound, which assumes no communication.
+{% details 答案 %}
 
-**Question:** For each of these, what throughput per chip does this give us (in terms of queries / chip)? *You can assume our median decode length is 512 tokens.*
+也简单——我们把批选成刚好塞满 HBM 了！问题等价于“把一块 TPU v5e 的全部字节装进 MXU 要多久”：`v5e HBM / v5e HBM memory bandwidth = 16GB / 8.2e11 = 19ms`，即**每步 19ms**。若生成长度中位数 512 个 token，一次完整解码约 9 秒。注意小一点的批其实能换来更快的延迟：比如只装 int8 模型参数，每步的最小延迟约 10ms——因为 HBM 没被塞满。
 
-{% details Answer %}
+{% enddetails %}
 
-This is an important question because it's exactly correlated with cost / token.
+<p markdown=1 class="takeaway">**要点**：解码延迟永远可以用“把所有参数从 HBM 装进 MXU 要多久”来设下界。KV 缓存小的时候，可以把每一层理解成“按块搬进权重、用完就扔”。只要批不大、设备间通信不多，这个界通常靠谱（误差 1.5 倍以内）。批更大时，就得把 KV 缓存的读取也建模进来——那时它比参数更占头。</p>
 
-With our assumption about median decode length, our throughput is just $$B / (\text{per-step latency} \cdot \text{median steps} \cdot N) \approx 43 / (0.019 * 512 * N)$$. This gives us roughly $$(4.42 / N)$$ QPS, so plugging in $$N$$ we get:
+同样，在计算受限区（比如训练或大批推理），可以用 $$\text{Total FLOPs} / (N \cdot C) = 2 \cdot \text{param count} \cdot B / (N \cdot C)$$ 设下界——它假设零通信。
 
-|  dtype   | QPS / chip |
+**问题：** 上述每种配置，每芯片吞吐是多少（按“每芯片每秒几个请求”算）？*可以假设解码长度中位数 512 个 token。*
+
+{% details 答案 %}
+
+这个问题很要紧，因为它和每 token 成本严格挂钩。
+
+按上面的解码长度假设，吞吐就是 $$B / (\text{per-step latency} \cdot \text{median steps} \cdot N) \approx 43 / (0.019 * 512 * N)$$，约为 $$(4.42 / N)$$ QPS。代入 $$N$$：
+
+|   精度   | QPS / 芯片 |
 | :------: | :--------: |
 | bfloat16 |    0.27    |
 |   int8   |    0.55    |
 |   int4   |    1.11    |
 
-Note that this is rather optimistic since it totally ignores the working memory of the forward pass (memory allocated to activations and attention). This is not ridiculous with Flash Attention, but it is also not realistic. The real numbers are likely around 1/2 of this. For absolutely maximum throughput we would probably want to more than double the number of chips and increase the batch size significantly as well.
+注意这相当乐观——它完全没算前向的工作内存（激活和注意力要占的内存）。有 Flash Attention 在，这笔账不算离谱，但也绝不便宜。真实数字大约只有这里的一半。想要极限吞吐，我们多半得把芯片数翻上一倍还多、再把批显著拉大。
 
 {% enddetails %}
 
-**Question:** How would our peak throughput change if we doubled our topology for each of the above examples?
+**问题：** 如果上面每个例子的拓扑都翻倍，峰值吞吐会怎么变？
 
-{% details Answer %}
+{% details 答案 %}
 
-If we used a 4x8 slice in bfloat16, we would have 372GB remaining for KV caches, which would let us increase our batch size to 140. Then since our step time would remain the same, we would have a throughput of `14.39 / num_chips`, or
+若用 4x8 切片跑 bfloat16，就有 372GB 余量给 KV 缓存，批可以拉到 140。每步时间不变，吞吐就是 `14.39 / num_chips`：
 
-|       dtype       | QPS / chip |
+|      精度       | QPS / 芯片 |
 | :---------------: | :--------: |
-| bfloat16 (on 4x8) |    0.44    |
-|   int8 (on 4x4)   |    0.90    |
-|   int4 (on 2x4)   |    1.80    |
+| bfloat16（4x8 上） |    0.44    |
+|   int8（4x4 上）   |    0.90    |
+|   int4（2x4 上）   |    1.80    |
 
-A further increase would give an even bigger win! The big takeaway is that **the smallest topology is not the most performant topology** in all cases, if we're limited by KV cache size.
+再翻倍还有更大的甜头！最重要的结论是：**受 KV 缓存大小限制时，最小拓扑不等于最省钱的拓扑。**
 
 {% enddetails %}
 
-**Question:** Now let's dig into the question of sharding. Let's say we wanted to serve in bfloat16 on a TPU v5e 4x8. What sharding would we use for our model on a TPU v5e 4x8 during generation? Can we avoid being communication bound?
+**问题：** 现在来聊分片。假设要在 TPU v5e 4x8 上用 bfloat16 服务。生成阶段该用什么模型分片？能不被通信卡住吗？
 
-{% details Answer %}
+{% details 答案 %}
 
-As discussed in the previous section, we only really have one option for sharding during generation: model parallelism. How much can we do before we become communication bound? As we've discussed in the previous section, our models become communication bound roughly when
+上一节说过，生成阶段的分片选择其实只有一个：模型并行。能做到多狠才被通信卡住？也讲过，被通信卡住大约在
 
 $$Y > \frac{F \cdot M_Y}{2200}$$
 
-For LLaMA 3-70B we have `F = 28,672`, so if we do 2 axes of model sharding this gives us roughly $$Y = 28672 \cdot 2 / 2200 = 26$$, so in general we could scale up to about 16 chips without being communication bound, which lets us use a `4x4` but not a `4x8`. Generally, since we do not perfectly overlap computation, even this estimate is overly optimistic.
+LLaMA 3-70B 的 `F = 28,672`。若模型分片占 2 条轴，得 $$Y = 28672 \cdot 2 / 2200 = 26$$。也就是说一般能扩到 16 块芯片左右不被通信卡住——`4x4` 可以，`4x8` 不行。而且通常计算做不到完美重叠，连这个估计都偏乐观。
 
-**Takeaway: we cannot actually serve on a 4x8 with pure model parallelism.** The best we can do here is a 4x2 or _maybe_ a 4x4.
+**要点：纯模型并行实际上服务不了 4x8。**最多 4x2，`4x4` 得碰运气。
 
-However, as we've discussed, when our batch size is small we can often do more model parallelism without significantly hurting throughput, since our model is memory-bandwidth-bound and not FLOPs bound. We said before that this value is roughly $Y=F / (8\cdot B)$, so if we did batch size 64, we could in theory go up to `Y = 28,672 / (8 * 64) = 56` way model parallelism before we become ICI-bound. To sanity check this, we can look at $T_\text{ici comms}$, $T_\text{hbm comms}$, and $T_\text{math}$ for a single matmul. We clearly have:
+不过前面也讲过，批小的时候可以多做模型并行而不太伤吞吐——模型卡在内存带宽而不是 FLOPs 上。那个界大约是 $Y=F / (8\cdot B)$：批取 64 时，理论上 `Y = 28,672 / (8 * 64) = 56` 路模型并行才被 ICI 卡住。验证一下：对单个矩阵乘比较 $T_\text{ici comms}$、$T_\text{hbm comms}$ 和 $T_\text{math}$，显然有
 
 $$\begin{align*}T_\text{ici comms} = \frac{2BD}{W_\text{ici}} && T_\text{hbm comms} = \frac{2DF}{Y \cdot W_\text{hbm}} && T_\text{math} = \frac{2BDF}{Y \cdot C}\end{align*}$$
 
-For a `4x8`, this would give us $T_\text{ici comms}$ = `(2 * 64 * 8192) / 9e10 = 11us`, $T_\text{hbm comms}$ = `(2 * 8192 * 28,672) / (32 * 8.2e11) = 18us`, and $T_\text{math}$ = `(2 * 64 * 8192 * 28,672) / (32 * 1.97e14) = 4us`, so in theory we're still HBM bandwidth bound, which is great! *Note that scaling up from a `4x4` to a `4x8` probably isn't helpful from a throughput standpoint, but it'll reduce our latency!*
+`4x8` 下：$T_\text{ici comms}$ = `(2 * 64 * 8192) / 9e10 = 11us`；$T_\text{hbm comms}$ = `(2 * 8192 * 28,672) / (32 * 8.2e11) = 18us`；$T_\text{math}$ = `(2 * 64 * 8192 * 28,672) / (32 * 1.97e14) = 4us`。理论上仍由 HBM 带宽定乾坤，完美！*注意从 `4x4` 扩到 `4x8`，吞吐上多半没好处，但延迟会降！*
 
-If we look at the int8 and int4 configs, we _can_ do those with pure model parallelism. So we've hit a point at which quantization actually gives us a meaningful advantage beyond faster FLOPs: it lets us use a larger batch size before we become comms-bound. **So the end of this story is that we can't achieve peak throughput on a 4x8, but for the int8 and int4 configs we could do pure model parallelism.**
-
-{% enddetails %}
-
-<p markdown=1 class="takeaway">**Tip**: the maximum amount of useful model parallelism depends on $$d_{ff}$$ and the number of axes over which you're sharding your model. The maximum value usually ranges between 8 and 32 depending on the model size. You can scale beyond this limit to improve latency at some throughput cost.</p>
-
-### What about prefill?
-
-We've mostly ignored prefill here because it's much simpler. Let's put a couple of concepts together and think about the end-to-end picture.
-
-**Question:** Assume we achieve a 40% FLOPs utilization during prefill. How long will a prefill of length 8192 take on 16 TPU v5e chips?
-
-{% details Answer %}
-
-At 8k tokens, we are solidly compute bound, so we just need to reason about FLOPs. We know our model has `70e9` parameters so each forward pass uses `2 * 70e9 * B` FLOPs. Assuming 40% MFU (FLOPs utilization), this gives us a runtime of about `2 * 70e9 * 8192 / (16 * 1.97e14 * 0.4) = 0.91s`. Compared to the numbers we've been looking at before, that's actually quite a lot!
+int8 和 int4 那两套配置则 _可以_ 纯模型并行。于是我们撞上了一个有意思的节点：量化带来的好处不止“算得更快”——它让我们在被通信卡住之前能用上更大的批。**所以这一段的结论：4x8 上达不到峰值吞吐；但 int8 和 int4 配置可以纯模型并行。**
 
 {% enddetails %}
 
-**Question:** Assume we have a median prefill length of 8192 tokens and a median decode length of 4096 tokens. Say we have a generate batch size of 32. On average how many sequences finish decoding per step? On average how many tokens are evicted from our KV cache each step?
+<p markdown=1 class="takeaway">**提示**：有用的模型并行的最大路数取决于 $$d_{ff}$$ 和你用了多少条切分轴，通常在 8 到 32 之间，随模型大小而异。越过这条线继续切也能切——那就是拿吞吐换延迟了。</p>
 
-{% details Answer %}
+### 预填充呢？
 
-This is kind of straightforward. Since we have a median decode length of 4096 tokens, a sequence will finish roughly every 1 / 4096 tokens. Given a batch size of 32, this means we have `32 / 4096` sequences evicted per step. Since our KV cache length is roughly `8192 + 4096`, this is `32 * (8192 + 4096) / 4096 = 96` tokens evicted per step. The general formula is $B * (P + G) / G$ where $P$ and $G$ are the prefill and generate lengths.
+前面基本没提预填充，因为它简单得多。把几个概念拼起来，看看端到端的图景。
 
-{% enddetails %}
+**问题：** 假设预填充能做到 40% 算力利用率。在 16 块 TPU v5e 上做一次长度 8192 的预填充要多久？
 
-**Question:** Assume we do disaggregated serving with a median prefill length of 8192 and a median decode length of 512. Assume the prefill and generate latencies calculated above in bfloat16. What ratio of prefill:generate servers will you need to keep both fully saturated.
+{% details 答案 %}
 
-{% details Answer %}
-
-This is kind of a fun question. Let $P$ be the number of prefill servers and $G$ be the number of generate servers. So generally speaking, this is a pipeline problem where we feed sequences in at a rate of `P / prefill_latency` and consume them at a rate of `B * G / (generate_latency * median_decode_length)`. We had calculated `910ms` per prefill step and `19ms` per decode step at batch size 43 (let's call that 32). Therefore we need `P / 0.91 = 32 * G / (0.019 * 512)` or `P = 3G`, i.e. we need about 3 times more prefill servers than generation servers!
+8k 个 token，稳处计算受限区，只算 FLOPs 就行。模型 `70e9` 参数，一次前向 `2 * 70e9 * B` FLOPs。按 40% MFU 算，耗时约 `2 * 70e9 * 8192 / (16 * 1.97e14 * 0.4) = 0.91s`。和前面的数字比，这可真不少！
 
 {% enddetails %}
 
-## Visualizing the Latency Throughput Tradeoff
+**问题：** 设预填充长度中位数 8192、解码长度中位数 4096，生成批大小为 32。平均每步有多少条序列解码完成？平均每步要从 KV 缓存里清掉多少 token？
 
-Sticking with LLaMA 70B for a second, let's actually look at the latency and throughput for different batch sizes during generation. As we showed in the previous section for PaLM models, this gives us a Pareto frontier for throughput/latency. Let's assume 16-way tensor parallelism since that's a reasonable bound on what we can use while staying compute-bound in the MLP blocks. We'll use a TPU v5e 4x4 topology here. **The slider controls the sequence length so you can see the effect of larger KV caches.**
+{% details 答案 %}
+
+这题挺直白。解码长度中位数 4096，意味着平均每 4096 个 token 完成一条序列。批 32，则每步淘汰 `32 / 4096` 条。KV 缓存长度约 `8192 + 4096`，所以每步清掉 `32 * (8192 + 4096) / 4096 = 96` 个 token。通式是 $B * (P + G) / G$，$P$、$G$ 分别是预填充和生成长度。
+
+{% enddetails %}
+
+**问题：** 假设做分离式服务，预填充长度中位数 8192、解码长度中位数 512，bfloat16，延迟就用上面算出来的那些。要让预填充和生成两组服务器都不闲着，预填充:生成的服务器数量比例该是多少？
+
+{% details 答案 %}
+
+这题有点意思。设预填充服务器 $P$ 台、生成服务器 $G$ 台。本质是个流水线问题：注入速率是 `P / prefill_latency`，消耗速率是 `B * G / (generate_latency * median_decode_length)`。前面算过一次预填充 `910ms`、批 43（就当 32）时每步解码 `19ms`。于是要 `P / 0.91 = 32 * G / (0.019 * 512)`，即 `P = 3G`——**预填充服务器要配成生成服务器的约 3 倍！**
+
+{% enddetails %}
+
+## 把“延迟-吞吐”的取舍画出来看 {#把-延迟-吞吐-的取舍画出来看}
+
+还是拿 LLaMA 70B 开刀，看看生成阶段不同批大小下的延迟和吞吐。上一节对 PaLM 已经展示过，这会画出一条吞吐/延迟的帕累托前沿。设 16 路张量并行——想保住 MLP 块的计算受限，这是个合理的上限——拓扑取 TPU v5e 4x4。**滑块控制序列长度，可以直观看到大 KV 缓存的效果。**
 
 <figure class="plotly-embed">
   <iframe src="{{ 'assets/plotly/pareto.html' | relative_url }}" title="Latency/throughput Pareto frontier for LLaMA 3-70B" loading="lazy" scrolling="no"></iframe>
-  <figcaption><b>Figure:</b> throughput per chip against per-token latency for LLaMA 3-70B (int8 weights, 16-way tensor parallelism) on a TPU v5e 4x4, sweeping batch size along each curve. Drag the slider to change the context length; each curve stops at the largest batch whose KV cache fits in HBM.</figcaption>
+  <figcaption><b>图：</b>LLaMA 3-70B（int8 权重、16 路张量并行）在 TPU v5e 4x4 上，每芯片吞吐对每 token 延迟，沿每条曲线扫描批大小。拖动滑块改变上下文长度；每条曲线在“KV 缓存还装得进 HBM 的最大批”处截止。</figcaption>
 </figure>
 
-* **See how dramatic the tradeoff is between cost and latency.** At the cost of doubling per-token latency, we can achieve a roughly 100x reduction in per-token cost. Also, our latency can range anywhere from 5.5ms with low batch size to 20 ms with very large batches.
-* Note how at 2k context the throughput effectively plateaus at around 1 token / ms / chip when it hits the BS 120 roofline (120 here because we do int8 weights but bf16 FLOPs). As the sequence length increases, however, we can no longer fit this batch size in memory, so we never hit the point of full saturation.
-* Note how much higher the latency is at large batch sizes for the same throughput, since KV loading becomes dominant (instead of parameter loading).
+* **感受一下成本与延迟的交换有多剧烈。**每 token 延迟翻一倍，每 token 成本就能降大约 100 倍。另外，延迟从小批时的 5.5ms 一路到大批的 20ms，跨度巨大。
+* 注意 2k 上下文时，吞吐在撞到 BS 120 的屋顶线后基本停在 1 token / ms / 芯片（120 是因为 int8 权重配 bf16 计算）。而上下文一长，这个批就装不进内存了，我们再也到不了完全饱和的那一点。
+* 注意同样的吞吐下，大批的延迟高得多——因为这时是 KV 加载当家，不再是参数加载。
 
-We can understand this better by breaking down the sources of cost and latency into param loading time, KV loading time, and FLOPs time. The shaded region is where we expect to be compute-bound in our MLP blocks.
+把成本与延迟拆成“参数加载、KV 加载、FLOPs”三块，会看得更清楚。阴影区是我们预期 MLP 块计算受限的区域。
 
 <figure class="plotly-embed">
   <iframe src="{{ 'assets/plotly/latency_breakdown_log.html' | relative_url }}" title="Decode step time breakdown for LLaMA 3-70B" loading="lazy" scrolling="no"></iframe>
-  <figcaption><b>Figure:</b> time per decode step for LLaMA 3-70B on a TPU v5e 4x4 as a function of batch size, split into parameter loading, KV cache loading, and FLOPs. The total is the KV loading time plus whichever of parameter loading or FLOPs is larger. Drag the slider to change the context length.</figcaption>
+  <figcaption><b>图：</b>LLaMA 3-70B 在 TPU v5e 4x4 上每步解码耗时随批大小的变化，拆分为参数加载、KV 缓存加载与 FLOPs 三部分。总时间 = KV 加载时间 + （参数加载与 FLOPs 中较大的那个）。拖动滑块改变上下文长度。</figcaption>
 </figure>
 
-This tells quite a story. You can see that initially, parameter loading represents the vast majority of the latency, until the batch size becomes large enough that FLOPs and KV loading become more significant. Notably, at all sequence lengths greater than 2048, we spend more time on KV cache loading than we do on FLOPs! **So while we can improve our hardware utilization by increasing batch size, at long context lengths KV loading always dominates the total step time.**
+这一图讲了一个很清楚的故事：起初延迟几乎全是参数加载；批足够大后，FLOPs 和 KV 加载才变得要紧。值得注意的是，只要序列长度超过 2048，KV 缓存加载的时间就全程超过 FLOPs 时间！**加大批确实能提高硬件利用率——但在长上下文下，KV 加载永远统治着每步总时间。**
 
-<p markdown=1 class="takeaway">**Takeaway:** for LLaMA 3-70B, we are strongly KV cache memory bandwidth-bound (and HBM-bound) in almost all of these configurations, highlighting just how important reducing KV cache size is for generation throughput. Also note just how dramatic the latency/throughput tradeoff remains here.</p>
+<p markdown=1 class="takeaway">**要点**：LLaMA 3-70B 在以上几乎所有配置里都是被 KV 缓存的内存带宽（以及 HBM 容量）死死卡住的。这正说明：想提生成吞吐，压缩 KV 缓存最关键。另外也感受一下这里的延迟/吞吐取舍有多陡峭。</p>
 
-{% details The code for this is quite simple. %}
+{% details 这部分的代码其实很简单。 %}
 
-Here's the code for computing these rooflines:
+计算这些屋顶线的代码：
 
 ```py
 import numpy as np
@@ -356,30 +356,30 @@ latency = 1000 * (mlp_time + attn_time)
 throughput = batch_sizes / (latency * num_chips)
 ```
 
-Note how we very explicitly break out latency into two sources: KV loading and param loading, and how the latency is either bound by FLOPs or comms, whichever is bigger.
+注意我们把延迟明确拆成了两个来源：KV 加载和参数加载；而延迟取的是 FLOPs 和通信中较大的那个。
 
 {% enddetails %}
 
-## Worked Problems
+## 动手解题
 
-Here are a few worked problems. Some of these repeat things that are worked above, but might be pedagogically useful.
+下面几道题。有的和上面做过的重复，但当练习也许更有教学意义。
 
-**Question 1:** How many FLOPs does each forward pass for LLaMA 3-405B use per-token? Assuming we're FLOPs bound, what is a lower bound on a single forward pass on N chips on TPU v5e? What if we're comms bound? *Ignore the fact that the model does not fit on a single chip.*
+**问题 1：** LLaMA 3-405B 每次前向每 token 用多少 FLOPs？若计算受限，在 N 块 TPU v5e 上一次前向的下界是多少？若通信受限呢？*不用管模型装不进单块芯片这件事。*
 
-**Question 2:** Assume we want to serve LLaMA 3-8B with BS240 using int8 weights and int8 KV caches. How many bytes are used by (a) model parameters (b) KV caches and (c) peak working activations (roughly)? What's the smallest topology we can run this on?
+**问题 2：** 假设要用 int8 权重、int8 KV、批 240 服务 LLaMA 3-8B。(a) 模型参数、(b) KV 缓存、(c) 峰值工作激活各占多少字节（数量级即可）？能跑起来的最小拓扑是多大？
 
-**Question 3:** How would you serve LLaMA 3-405B on TPU v5e? Assume int8 weights and bfloat16 FLOPs. Let's say we have a firm limit of 15ms / token, what's the highest throughput configuration we could achieve? What is the theoretical minimum step time?
+**问题 3：** 你会怎么在 TPU v5e 上服务 LLaMA 3-405B？假设 int8 权重、bfloat16 计算。设每 token 15ms 是硬上限，能达到的最高吞吐配置是什么？理论最小步长是多少？
 
-**Question 4:** The best way to learn about LLMs is to implement one from scratch. Building the full training pipeline is annoying and expensive, but turning trained weights you can [download from HuggingFace](https://huggingface.co/meta-llama/Llama-3.1-8B-Instruct/) into a working inference implementation is extremely instructive. Roughly speaking, you should try to do the following:
+**问题 4：** 了解 LLM 最好的办法是亲手实现一个。搭完整的训练管线又麻烦又贵，但把从 [HuggingFace 下载](https://huggingface.co/meta-llama/Llama-3.1-8B-Instruct/)的训练好的权重变成一个能跑的推理实现，收获会大得惊人。大致来说，你应该试着做完下面这些事：
 
-1. Download LLaMA 3 8B weights and load them in Colab. Visualize the weights (I like [TreeScope](https://github.com/google-deepmind/treescope) for this) and see if you can identify each tensor. Count the # of parameters. Does it match what you expect? How many are in the MLP vs. attention?
+1. 下载 LLaMA 3 8B 权重，在 Colab 里加载。把权重画出来看看（我好用 [TreeScope](https://github.com/google-deepmind/treescope)），看看能不能认出每个张量。数一数参数量，和你预期的一致吗？MLP 和注意力各占多少？
 
-2. Implement the full forward pass of the model. You don't need to worry about prefill/decode or anything fancy. Just get to the point where you can feed in a sequence and get plausible next-token probabilities out. You should be able to feed a prompt in, get probabilities out, pick the highest probability one, and repeat. This is slow but functional sampling. Try to only use the LLaMA-3 paper as a reference, but the [`jax-ml/jax-llm-examples/llama3`](https://github.com/jax-ml/jax-llm-examples/tree/main/llama3) repo can be a good reference for details (be careful of positional embeddings and causal masking). Your goal is to get coherent tokens out of the model. *You can run this all on a single TPU if you can get more than 16GiB of HBM.*
+2. 实现模型的完整前向。先不用管预填充/解码之类的花样，只要能喂进一段序列、得到说得过去的下一 token 概率就行：给个 prompt，出概率，挑最大的，重复。这很慢，但已经是能用的采样了。尽量只拿 LLaMA-3 论文当参考，但细节上可以对照 [`jax-ml/jax-llm-examples/llama3`](https://github.com/jax-ml/jax-llm-examples/tree/main/llama3) 仓库（位置编码和因果掩码要小心）。目标是让模型输出连贯的 token。*只要能拿到 16GiB 以上 HBM，这一切在一块 TPU 上就能跑。*
 
-3. Now it's time to make this faster. Implement KV caching, where you can save the key/value activations from a forward pass and attend to them in a subsequent one. This will make your sampling loop much faster.
+3. 现在来提速。实现 KV 缓存：把一次前向的键/值激活存下来，后续步骤直接去关注它们。采样循环会快一大截。
 
-4. Implement separate prefill and decode servers. You can do these on different sets of chips. Prefill handles just a single prompt at once, then sends it to a batched decode server that handles batches of tokens.
+4. 把预填充和解码拆成两个服务，跑在不同芯片上。预填充一次只处理一条 prompt，然后交给一个按批处理 token 的解码服务器。
 
-5. Implement Flash Attention in Pallas. This will make attention much more efficient. *I think it's good to try and do this without a reference.*
+5. 用 Pallas 实现 Flash Attention，注意力会高效得多。*我觉得值得一试的是：全程不抄参考实现。*
 
-<h3 markdown=1 class="next-section">That's all for Part 8! For Part 9, with a deep dive into XLA and TPU profiling, click [here](../profiling).</h3>
+<h3 markdown=1 class="next-section">第 8 部分到此结束！第 9 部分深入 XLA 与 TPU 性能剖析，[点击这里](../profiling)。</h3>

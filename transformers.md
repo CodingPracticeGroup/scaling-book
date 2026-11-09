@@ -1,8 +1,8 @@
 ---
 layout: distill
-title: "All the Transformer Math You Need to Know"
+title: "你需要了解的 Transformer 数学，这一篇就够了"
 # permalink: /main/
-description: "Here we'll do a quick review of the Transformer architecture, specifically how to calculate FLOPs, bytes, and other quantities of interest."
+description: "这里我们快速过一遍 Transformer 架构，重点是怎么计算 FLOPs、字节数，以及其他一些有用的量。"
 date: 2025-02-04
 future: true
 htmlwidgets: true
@@ -11,10 +11,10 @@ hidden: false
 section_number: 4
 
 previous_section_url: "../sharding"
-previous_section_name: "Part 3: Sharding"
+previous_section_name: "第 3 部分 · 分片的矩阵"
 
 next_section_url: ../training
-next_section_name: "Part 5: Training"
+next_section_name: "第 5 部分 · 扩大训练"
 
 giscus_comments: true
 giscus_discussion: 6
@@ -52,21 +52,21 @@ bibliography: main.bib
 #     for hyperlinks within the post to work correctly.
 #   - please use this format rather than manually creating a markdown table of contents.
 toc:
-  - name: "Counting Dots"
+  - name: "数点乘（Counting Dots）"
   - subsections:
-    - name: "Forward and reverse FLOPs"
-  - name: "Transformer Accounting"
-  - name: "Global FLOPs and Params Calculation"
-  - name: "Miscellaneous Math"
+    - name: "前向与反向的 FLOPs"
+  - name: "Transformer 的记账"
+  - name: "整体的 FLOPs 与参数量计算"
+  - name: "其他相关计算"
   - subsections:
-    - name: "Sparsity and Mixture-of-Experts"
-    - name: "Gradient checkpointing"
-    - name: "Key-Value (KV) caching"
-  - name: "What Should You Take Away from this Section?"
-  - name: "A Few Problems to Work"
-  - name: "Appendix"
+    - name: "稀疏化与混合专家（MoE）"
+    - name: "梯度检查点"
+    - name: "Key-Value（KV）缓存"
+  - name: "这一节你应该带走什么？"
+  - name: "动手解题"
+  - name: "附录"
   - subsections:
-    - name: "Appendix A: How does Flash Attention work?"
+    - name: "附录 A：Flash Attention 是怎么工作的？"
 
 # Below is an example of injecting additional post-specific styles.
 # This is used in the 'Layouts' section of this post.
@@ -88,9 +88,9 @@ _styles: >
   }
 ---
 
-## Counting Dots
+## 数点乘（Counting Dots） {#数点乘-counting-dots}
 
-Let's start with vectors $$x$$, $$y$$ and matrices $$A$$, $$B$$ of the following shapes:
+先设几个向量 $$x$$、$$y$$ 和矩阵 $$A$$、$$B$$，形状如下：
 
 $$
 \def \red#1{\textcolor{red}{#1}}
@@ -110,10 +110,10 @@ B               & \textrm{[P M]} \\
 \end{array}
 $$
 
-- A dot product of $$x \cdot y$$ requires $$P$$ _adds_ and _multiplies_, or $$2P$$ floating-point operations total.
-- A matrix-vector product $$Ax$$ does $$N$$ dot-products along the rows of $$A$$, for $$2NP$$ FLOPs.
-- A matrix-matrix product $$AB$$ does a matrix-vector product for each of the $$M$$ columns of $$B$$, for $$2NPM$$ FLOPs total.
-- In general, if we have two higher-dimensional arrays $$C$$ and $$D$$, where some dimensions are <span style="color:red">CONTRACTING</span> and some are <span style="color:blue">BATCHING</span> (e.g. $$C[\blue{GH}IJ\red{KL}], D[\blue{GH}MN\red{KL}]$$), then the FLOPs cost of this contraction is two times the product of all of the $$C$$ and $$D$$ dimensions where the batch and contraction dimensions are only counted once (e.g. $$2\blue{GH}IJMN\red{KL}$$). Note that a dimension is only batching if it occurs in both multiplicands. (Note also that the factor of 2 won't apply if there are no contracting dimensions and this is just an elementwise product.)<d-footnote><b>Contracting</b> dimensions are axes that are summed over during the operation (they appear in both inputs but not in the output), like the inner dimension in a matrix multiply. <b>Batching</b> dimensions are shared axes that appear in both inputs and are carried unchanged to the output; they index independent subproblems and aren't multiplied together in FLOP counts. In einsum terms: labels present on both inputs and the output are batching; labels present on both inputs but absent from the output are contracting.</d-footnote>
+- 一次点积 $$x \cdot y$$ 需要 $$P$$ 次*加法和乘法*，一共 $$2P$$ 次浮点运算。
+- 矩阵-向量乘 $$Ax$$ 相当于沿 $$A$$ 的每一行做一次点积，共 $$N$$ 行，所以要 $$2NP$$ FLOPs。
+- 矩阵-矩阵乘 $$AB$$ 相当于对 $$B$$ 的每一列做一次矩阵-向量乘，共 $$M$$ 列，总计 $$2NPM$$ FLOPs。
+- 一般地，如果我们有两个更高维的数组 $$C$$ 和 $$D$$，其中一些维度是<span style="color:red">收缩维（CONTRACTING）</span>、一些是<span style="color:blue">批量维（BATCHING）</span>（例如 $$C[\blue{GH}IJ\red{KL}], D[\blue{GH}MN\red{KL}]$$），那么这次收缩的 FLOPs 代价就是“两倍 × 所有维度的乘积”，其中 $$C$$ 和 $$D$$ 的每个维度都出现一次，只是批量维和收缩维只数一遍（例如 $$2\blue{GH}IJMN\red{KL}$$）。注意：只有同时出现在两个乘数里的维度才算批量维。（还要记住：如果根本没有收缩维、这只是一次逐元素相乘，那个因子 2 是不存在的。）<d-footnote><b>收缩（Contracting）维</b>是运算中真正做求和的那条轴（两个输入里都有它，输出里没有），就像矩阵乘法里的那个内部维度。<b>批量（Batching）维</b>是同时出现在两个输入里、并原封不动带进输出的共享轴；它们代表互相独立的小问题，在数 FLOPs 时不参与相乘。用 einsum 的话说：同时出现在两个输入和输出里的标签是批量维；出现在两个输入里但输出里没有的标签是收缩维。</d-footnote>
 
 $$
 \begin{array}{ccc}
@@ -130,47 +130,47 @@ AB         & 2NPM & NP + PM \\
 \end{array}
 $$
 
-Make note of the fact that for a matrix-matrix multiply, the *compute* scales cubically $$O(N^3)$$ while the data transfer only scales quadratically $$O(N^2)$$ — this means that as we scale up our matmul size, it becomes *easier* to hit the compute-saturated limit. This is extremely unusual, and explains in large part why we use architectures dominated by matrix multiplication — they're amenable to being scaled!
+请记住这个事实：矩阵乘法里，*计算量*按三次方增长 $$O(N^3)$$，而数据搬运只按二次方增长 $$O(N^2)$$——这意味着矩阵乘得越大，反而越*容易*跑到“算力吃满”的上限。这一点极其罕见，也在很大程度上解释了为什么我们偏爱以矩阵乘法为主的架构——它们天生适合放大！
 
 {% include figure.liquid path="assets/img/matmul-flops.gif" class="img-fluid" %}
 
-### Forward and reverse FLOPs
+### 前向与反向的 FLOPs
 
-During training, we don't particularly care about the result of a given matrix multiply; we really care about its derivative. It turns out that calculating that derivative costs about 3x more than just doing the matmul itself.
+训练时，我们其实并不那么关心某次矩阵乘的结果本身；真正要紧的是它的导数。而算这个导数的代价，约是乘法本身开销的 3 倍。
 
-If we imagine **B** is just one matrix in a larger network and **A** are our input activations with **C = A B**, the derivative of the loss **L** with respect to **B** is given by the chain rule:
+把 **B** 想象成网络里的一层，**A** 是它的输入激活，**C = A B**。根据链式法则，损失 **L** 对 **B** 的导数是：
 
 $$\frac{\partial L}{\partial B} = \frac{\partial L}{\partial C}\frac{\partial C}{\partial B} = A^T \left(\frac{\partial L}{\partial C}\right)$$
 
-which requires $2NPM$ FLOPs to compute (since it contracts over the $N$ dimension). Likewise, the derivative of the loss with respect to **A** is
+这要做 $2NPM$ FLOPs（它对 $N$ 维做收缩）。同样，损失对 **A** 的导数是
 
 $$\frac{\partial L}{\partial A} = \frac{\partial L}{\partial C}\frac{\partial C}{\partial A} = \left(\frac{\partial L}{\partial C}\right) B^T$$
 
-which is again $2NPM$ FLOPs since **dL/dC** is a matrix of size $$[N, M]$$. While this quantity isn't the derivative w.r.t. a parameter, it's used to compute derivatives for previous layers of the network (e.g. just as dL/dC is used to compute dL/dB above).
+同样又是 $2NPM$ FLOPs，因为 **dL/dC** 是一个 $$[N, M]$$ 的矩阵。这个量虽然不是对某个参数的导数，但它是计算更前几层导数所必需的（就像上面用 dL/dC 算 dL/dB 一样）。
 
-Adding these up, we see that **during training, we have a total of 6NPM FLOPs**, compared to 2NPM during inference: 2NPM in the forward pass, 4NPM in the backward pass. Since PM is the number of parameters in the matrix, this is the simplest form of the famous $$6 * \text{num parameters} * \text{num tokens}$$ approximation of Transformer FLOPs during training: each token requires $$6 * \text{num parameters}$$ FLOPs. We'll show a more correct derivation below.
+把这些加起来就得到：**训练时的总计算量是 6NPM FLOPs**，而推理只要 2NPM——前向传播 2NPM，反向传播 4NPM。由于 PM 正是这个矩阵的参数量，这就是那条著名近似公式的最简形态：训练 Transformer 的 $$6 * \text{num parameters} * \text{num tokens}$$（即 6 × 参数量 × token 数）——每个 token 要花 $$6 * \text{num parameters}$$ FLOPs（六倍参数量）。下面我们会给出更严格的推导。
 
-## Transformer Accounting
+## Transformer 的记账
 
-Transformers are the future. Well, they're the present at least. Maybe a few years ago, they were one of many architectures. But today, it's worth knowing pretty much every detail of the architecture. We won't reintroduce the architecture, but [this blog](https://jalammar.github.io/illustrated-transformer/) and the [original Transformer paper](https://arxiv.org/abs/1706.03762) may be helpful references.
+Transformer 是未来。好吧，至少是现在。几年前它或许还只是众多架构中的一种，但今天，这套架构的细节都值得弄个明白。我们不再重新讲一遍架构；[这篇博客](https://jalammar.github.io/illustrated-transformer/)和[最初的 Transformer 论文](https://arxiv.org/abs/1706.03762)可以作为很好的参考。
 
-Here's a basic diagram of the Transformer decoder architecture:
+这是 Transformer 解码器架构的一张基本示意图：
 
-{% include figure.liquid path="assets/img/transformer-diagram.png" class="img-fluid" caption="<b>Figure:</b> this diagram shows one layer of a standard Transformer and flows from top-to-bottom. We use a single-letter convention to describe the shapes and layouts of arrays in a Transformer, again showing contracting dimensions in red, and batched dimensions in blue. In a given operation, the input shape is given on top-left and the parameter shape is given on the top-right, with the resulting shape below, e.g. BTD is the input shape for the gating einsum and DF is the weight shape." %}
+{% include figure.liquid path="assets/img/transformer-diagram.png" class="img-fluid" caption="<b>图：</b>这张图展示标准 Transformer 的一层，从上往下流动。我们用单字母记号来描述 Transformer 里数组的形状和摆法，收缩维仍标红色，批量维标蓝色。每个运算的输入形状标在左上角，参数形状标在右上角，结果形状写在下面。例如：BTD 是门控 einsum 的输入形状，DF 是权重形状。" %}
 
-**Note [gating einsum]**: The diagram above uses a "[gating einsum](https://arxiv.org/abs/2002.05202)"<d-cite key="glu"></d-cite> where we split the up-projection matrix into two matrices ($W_\text{In1}$ and $W_\text{In2}$ above) whose outputs are elementwise multiplied as a kind of "gating function". Not all LLMs use this, so you will sometimes see a single $W_\text{In}$ matrix and a total MLP parameter count of 2DF instead of 3DF. Typically in this case, D and F will be scaled up to keep the parameter count the same as the 3 matrix case. With that said, some form of gating einsum is used by LLaMA, DeepSeek, and many other models.
+**注 1 [门控 einsum]**：上图用了一个“[门控 einsum（gating einsum）](https://arxiv.org/abs/2002.05202)”<d-cite key="glu"></d-cite>：把上投影矩阵拆成两个矩阵（上图的 $W_\text{In1}$ 和 $W_\text{In2}$），它们的输出逐元素相乘，起到一种“门控函数”的作用。并非所有 LLM 都这样，所以你会看到有的模型只有一个 $W_\text{In}$ 矩阵，MLP 参数量合计是 2DF 而不是 3DF。那种情况下，D 和 F 通常会被放大，让参数量和“三个矩阵”的版本保持一致。话虽如此，LLaMA、DeepSeek 和许多模型都用了某种形式的门控 einsum。
 
-**Note 2 [MHA attention]**: With self-attention, T and S are the same but for cross-attention they may be different. With vanilla Multi-Head Attention (MHA), N and K are the same while for [Multi-Query Attention](https://arxiv.org/abs/1911.02150) (MQA)<d-cite key="mqa"></d-cite> K=1 and for [Grouped MQA](https://arxiv.org/abs/2305.13245) (GMQA)<d-cite key="gmqa"></d-cite>, K merely has to divide N.
+**注 2 [MHA 注意力]**：自注意力中 T 和 S 相等；交叉注意力中两者可能不同。在标准的多头注意力（MHA）里，N 和 K 相等；而[多查询注意力（Multi-Query Attention）](https://arxiv.org/abs/1911.02150)（MQA）<d-cite key="mqa"></d-cite> 里 K=1；[分组 MQA（Grouped MQA）](https://arxiv.org/abs/2305.13245)（GMQA）<d-cite key="gmqa"></d-cite> 只要求 K 整除 N。
 
-**Note 3 [pre-norm vs. post-norm]:** The above diagram shows what is known as a "pre-norm" architecture in which the norm occurs before the residual connection, usually as `x + attn(norm(x))`. Models like LLaMA-3 use this today. The original Transformer paper used a "post-norm" architecture in which the layernorm occurs after the residual connection, i.e. `norm(x + attn(x))`.
+**注 3 [pre-norm 与 post-norm]：** 上图展示的是所谓“pre-norm”架构：归一化在残差连接之前发生，通常写成 `x + attn(norm(x))`。LLaMA-3 等现代模型都这样。最初的 Transformer 论文用的是“post-norm”：layernorm 在残差连接之后，即 `norm(x + attn(x))`。
 
-## Global FLOPs and Params Calculation
+## 整体的 FLOPs 与参数量计算
 
-Let's calculate the per-layer FLOPs of a Transformer (so we can avoid having to stick factors of **L** everywhere). Note that the training FLOPs below are almost always 3x the inference FLOPs, so you can divide any total by 3 to get the cost of just the forward pass.
+我们来算 Transformer 的*每层* FLOPs（这样就不用到处都乘上层数 **L**）。注意：下面训练 FLOPs 几乎总是推理（只做前向）的 3 倍，所以任何总数除以 3 就是纯前向传播的代价。
 
-### MLPs
+### MLP
 
-The MLPs of a Transformer typically consist of 2 input matmuls that are element-wise combined and a single output matmul:
+Transformer 的 MLP 通常是两次输入矩阵乘（输出逐元素合并）加一次输出矩阵乘：
 
 $$
 \begin{array}{ccc}
@@ -187,7 +187,7 @@ $$
 
 ### Attention
 
-For the generic grouped-query attention case with different **Q** and **KV** head numbers, let us assume equal head dimension H for **Q**,**K**,**V** projections, and estimate the cost of the **QKVO** matmuls:
+对更一般的情形（**Q** 与 **KV** 的头数不同，即分组查询注意力），假设 **Q**、**K**、**V** 投影的头维 H 相同，来估算 **QKVO** 四个矩阵乘的开销：
 
 $$
 \begin{array}{ccc}
@@ -201,7 +201,7 @@ A[B,T,\red{N}, \red{H}] \cdot W_{O}[\red{N}, \red{H}, D] & 6BTDNH & DNH \\[10pt]
 \end{array}
 $$
 
-The dot-product attention operation is more subtle, effectively being a $$TH \cdot HS$$ matmul batched over the $$B$$, $$K$$ dimensions, a softmax, and a $$TS \cdot SH$$ matmul again batched over the $$B$$, $$K$$ dimensions. We highlight the batched dims in blue:
+点积注意力运算就更微妙一些：它实际上先做一次沿 $$B$$、$$K$$ 维批处理的 $$TH \cdot HS$$ 矩阵乘，再加一个 softmax，然后再做一次同样沿 $$B$$、$$K$$ 批处理的 $$TS \cdot SH$$ 矩阵乘。批量维用蓝色标出：
 
 $$
 \begin{array}{cc}
@@ -217,11 +217,11 @@ S[\blue{B}, T, \red{S}, \blue{K}, G] \cdot V[\blue{B}, \red{S}, \blue{K}, H]
 \end{array}
 $$
 
-**Note [causal masking]**: Most recent transformers use a causal mask as opposed to full bidirectional attention. In this case the useful FLOPs of the dot product operations are reduced by half. To achieve this reduction in practice we need to make use of an attention kernel, rather than a naive einsum.
+**注 [因果掩码]**：现代 Transformer 大多用因果掩码（只能看过去），而不是完整的双向注意力。这样一来，点积运算里*有用的* FLOPs 就只剩一半。实践中要拿到这个节省，得用专门的注意力算子（kernel），不能直接用朴素的 einsum。
 
-### Other Operations
+### 其他操作
 
-There are several other operations happening in a Transformer. Layernorms are comparatively cheap and can be ignored for first-order cost estimates. Note that each layer typically has two of them (one before attention and one before the MLP). There is also the final enormous (though not per-layer) unembedding matrix multiply.
+Transformer 里还有一些别的运算。LayerNorm 相比之下非常便宜，做粗略估算时可以忽略。注意每层通常有两个（注意力前一个、MLP 前一个）。此外最后还有一次很大的“反嵌入”（unembedding）矩阵乘——它很大，但不是每层都有。
 
 $$
 \begin{array}{ccc}
@@ -232,9 +232,9 @@ A[B,T,\red{D}] \cdot W_{unembed}[\red{D}, V] & 6BTDV & DV \\
 \end{array}
 $$
 
-### General rule of thumb for Transformer FLOPs
+### Transformer FLOPs 的通用估算法则
 
-If we neglect the cost of dot-product attention (which is reasonable for shorter-context training), then the total FLOPs across all layers is
+如果忽略点积注意力的开销（对较短上下文的训练来说，这是合理的），那么所有层加起来的总 FLOPs 是
 
 $$
 \begin{align*}
@@ -242,53 +242,53 @@ $$
 \end{align*}
 $$
 
-This leads to a famous rule of thumb for estimating dense Transformer FLOP count, ignoring the attention FLOPs. (Unembedding is another simple matmul with $6BTDV$ FLOPs and $DV$ params, and follows the same rule of thumb.)
+这就得到了估算稠密 Transformer FLOPs 的那条著名法则（不含注意力部分）。（反嵌入也不过是一次简单的矩阵乘：$6BTDV$ FLOPs、$DV$ 参数，符合同一条法则。）
 
-### Fractional cost of attention with context length
+### 注意力占比随上下文长度的变化
 
-If we do account for dot-product attention above and assume $$F=4D$$, $$D=NH$$ (as is typical) and $$N=K$$, the ratio of dot-product attention FLOPs to all matmul FLOPs (including the attention projections) is:
+如果真把点积注意力算进来，并设 $$F=4D$$、$$D=NH$$（常见做法）、$$N=K$$，那么点积注意力的 FLOPs 与所有矩阵乘 FLOPs（含注意力投影）之比是：
 
 $$\small{\frac{\textrm{attention FLOPs}}{\textrm{matmul FLOPs}} = \frac{12BT^2NH}{18BTDF + 24BTDNH} = \frac{12BT^2D}{4*18 BTD^2 + 24 BTD^2} = \frac{12BT^2D}{96 BTD^2} = \frac{T}{8D}}$$
 
-The upshot is that **dot-product attention FLOPs only become dominant during training once T>8D**. For D ~ 8k, this would be ~64K tokens. This makes some sense, since it means as the MLP size increases, the attention FLOPs become less critical. For large models, the quadratic cost of attention is not actually a huge obstacle to longer-context training. However, for smaller models, e.g. Gemma-27B with D=4608, attention becomes dominant around 37k sequence lengths.<d-footnote>Note that some modern OSS models introduce local attention or other optimizations that reduce the cost of attention and change this roofline.</d-footnote> Flash Attention also helps alleviate the cost of long-context, which we discuss briefly [in Appendix A](#appendix-a-how-does-flash-attention-work).
+结论是：**训练时，只有当 T>8D，点积注意力的 FLOPs 才会占大头**。D ~ 8k 时，这相当于 ~64K token。这也说得通：MLP 越大，注意力就越不要紧。对大模型来说，注意力的二次方开销其实并不是长上下文训练的拦路虎。但对小模型就不是了，比如 Gemma-27B 的 D=4608，大约到 37k 序列长度注意力就占大头了。<d-footnote>注意：一些现代开源模型会引入局部注意力或其他优化来降低注意力开销，这会改变这条 roofline。</d-footnote> Flash Attention 也能缓解长上下文的问题，我们在[附录 A](#附录-a-flash-attention-是怎么工作的)简单讲讲。
 
-## Miscellaneous Math
+## 其他相关计算
 
-### Sparsity and Mixture-of-Experts
+### 稀疏化与混合专家（MoE） {#稀疏化与混合专家-moe}
 
-We'd be remiss not to briefly discuss Mixture of Experts (MoE) models<d-cite key="moe"></d-cite>, which replace the single dense MLP blocks in a standard Transformer with a set of independent MLPs that can be dynamically routed between. To a first approximation, **an MoE is just a normal dense model with E MLP blocks per layer**, instead of just one. Each token activates $k$ of these experts, typically $k \ll E$. The ratio $E / k$ is called the sparsity and is usually between 8 and 64 (e.g. [DeepSeek v3](https://arxiv.org/pdf/2412.19437) has effectively $k=8$, $E=256$). This increases the parameter count by $O(E)$, while multiplying the total number of activated parameters per token by $k$, compared with the dense version.
+混合专家（MoE）模型<d-cite key="moe"></d-cite>必须提一嘴：它把标准 Transformer 里那块单独的稠密 MLP，换成一组可以动态路由的独立 MLP。粗略地说，**MoE 就是一个普通的稠密模型，只是每层有 E 个 MLP 块**，而不是一个。每个 token 会激活其中 $k$ 个专家，通常 $k \ll E$。比值 $E / k$ 叫稀疏度，一般取 8 到 64 之间（例如 [DeepSeek v3](https://arxiv.org/pdf/2412.19437) 实际上是 $k=8$、$E=256$）。和稠密版本相比，参数量按 $O(E)$ 放大，而每个 token 实际激活的参数量只乘 $k$。
 
-{% include figure.liquid path="assets/img/moe.png" class="img-fluid img-small" caption="<b>Figure:</b> an example MoE layer with $n$ experts. The gating expert routes each token to $k$ of them, and the output of those $k$ MLPs get summed. Our parameter count is $n$ times the size of each expert, but only $k$ are used for each token. <a href=\"https://deepgram.com/learn/mixture-of-experts-ml-model-guide\">Source</a>." %}
+{% include figure.liquid path="assets/img/moe.png" class="img-fluid img-small" caption="<b>图：</b>一个含 $n$ 个专家的 MoE 层示例。门控专家把每个 token 路由给其中 $k$ 个专家，这 $k$ 个 MLP 的输出相加得到结果。我们的参数量是 $n$ 乘上单个专家的大小，但每个 token 只用到其中 $k$ 个。<a href=\"https://deepgram.com/learn/mixture-of-experts-ml-model-guide\">来源</a>。" %}
 
-Compared to a dense model, an MoE introduces new comms, primarily two AllToAlls (one before and one after the MoE block) that route tokens to the correct expert and bring them back to their home device.<d-footnote>Technically, this only happens if we are data or sequence sharded along the same axis as our experts.</d-footnote> However, as we saw in the previous section, the cost of each AllToAll is only 1/4 that of a comparable AllGather along a single axis (for a bidirectional ring).
+与稠密模型相比，MoE 引入了新的通信，主要是两次 AllToAll（一次在 MoE 块前、一次在后）：把 token 送到正确的专家那里，再送回它们的“老家”设备。<d-footnote>严格说，只有当数据或序列维的分片和专家的分片在同一条轴上时才会这样。</d-footnote>不过如上一节所见，每次 AllToAll 只有同一条轴上 AllGather 代价的 1/4（双向环）。
 
-### Gradient checkpointing
+### 梯度检查点
 
-Backpropagation as an algorithm trades compute for memory. Instead of a backward pass requiring $$O(n_\text{layers}^2)$$ FLOPs, **it requires $$O(n_\text{layers})$$ memory**, saving all intermediate activations generated during the forward pass. While this is better than quadratic compute, it's incredibly expensive memory-wise: a model with $$B * T=4M$$ (4M total tokens per batch), L=64, and D=8192 that avoids all unnecessary backward pass compute would have to save roughly $$2 * 20 * B * T * D * L = 84TB$$ of activations in bfloat16. The 20 comes from (roughly) counting every intermediate node in the Transformer diagram above, since e.g.
+反向传播这个算法，本质是拿计算换内存。反向传播不需要 $$O(n_\text{layers}^2)$$ 的 FLOPs，**却需要 $$O(n_\text{layers})$$ 的内存**——要把前向传播产生的所有中间激活都存下来。这虽然比“二次方的计算”好，但内存贵得吓人：一个 $$B * T=4M$$（每批总共 4M 个 token）、L=64、D=8192 的模型，哪怕把反向传播中一切不必要的计算都省掉，也要存下约 $$2 * 20 * B * T * D * L = 84TB$$ 的 bfloat16 激活。这个 20，是把上面 Transformer 示意图里每个中间节点大致都数了一遍，因为比如
 
 $$f(x) = \exp(g(x))$$
 
 $$\frac{df}{dx} = \exp(g(x)) \cdot \frac{dg}{dx}$$
 
-so to avoid recomputing we need to save $$g(x)$$ and $$\exp(g(x))$$ from the forward pass. To avoid saving this much memory, we can choose to only save some fraction of the intermediate activations. Here are a few strategies we use.
+要避免重算，就得把前向的 $$g(x)$$ 和 $$\exp(g(x))$$ 都存下来。为了不用存这么多内存，我们可以只保存一部分中间激活。下面是我们常用的几种策略。
 
-* **Block remat**: only save the input to each layer. This is the most aggressive method we use and only saves 1 checkpoint per layer, meaning we'd only save 4.2TB in the example above. This forces us to repeat essentially all forward pass FLOPs in the backward pass, meaning we increase our FLOPs from $$6 \cdot \text{num params} \cdot \text{num tokens}$$ to roughly $$8 \cdot \text{num params} \cdot \text{num tokens}$$.
-* **Big matmuls only:** another simple policy is to only save the outputs of large matmuls. This lets us avoid recomputing any large matmuls during the backward pass, but still makes us recompute other activation functions and parts of attention. This reduces the 20 per layer above to closer to 7 per layer.
+* **按块重算（Block remat）**：只保存每层的输入。这是我们用到的最激进做法，每层只存 1 个检查点，上面的例子只需存 4.2TB。代价是反向传播时几乎要把全部前向 FLOPs 重做一遍，总计算量就从 $$6 \cdot \text{num params} \cdot \text{num tokens}$$ 涨到约 $$8 \cdot \text{num params} \cdot \text{num tokens}$$。
+* **只保存大矩阵乘的输出：** 另一种简单策略是只保存大型矩阵乘的结果。这样反向传播时不用重算任何大矩阵乘，但其他激活函数和注意力的部分还是要重算。这能把上面每层 20 份激活降到 7 份左右。
 
-This is by no means comprehensive. When using JAX, these are typically controlled by `jax.remat`/`jax.checkpoint` (you can read more [here](https://jax.readthedocs.io/en/latest/_autosummary/jax.checkpoint.html)).
+这只是部分手段，并不完备。用 JAX 时，这些一般由 `jax.remat`/`jax.checkpoint` 控制（可[在这里](https://jax.readthedocs.io/en/latest/_autosummary/jax.checkpoint.html)了解更多）。
 
-### Key-Value (KV) caching
+### Key-Value（KV）缓存 {#key-value-kv-缓存}
 
-As we'll see in [Section 7](../inference), LLM inference has two key parts, prefill and generation.
+正如[第 7 部分](../inference)会看到的，LLM 推理分两个阶段：预填充（prefill）和生成（generation）。
 
-* **Prefill** processes a long prompt and saves its attention activations in a Key-Value Cache (KV Cache) for use in generation, specifically the key-value projections in the attention block.
-* **Generation** batches several of these KV caches together and samples tokens from each of them.
+* **预填充**处理一段长提示词，并把注意力的激活存进 Key-Value 缓存（KV 缓存），供生成阶段使用——具体是注意力块里的 key-value 投影结果。
+* **生成**会把好几个 KV 缓存凑成一个批次，分别从每个缓存里采样 token。
 
-Each KV cache is then effectively an array of size $[2, S, L, K, H]$ where the 2 accounts for the keys and values. This is quite large! The total size of the Key-Value cache in int8 is $2SLKH$. For a moderately sized model with 8k context length, 64 layers, and $KH = NH = D = 8192$, this is $2 \cdot 8192 \cdot 64 \cdot 8192 = 8\text{GiB}$. You can see why we would want to use GMQA with $K \ll N$.
+每个 KV 缓存实际上就是一个形状为 $[2, S, L, K, H]$ 的数组，那个 2 代表 keys 和 values。这相当大！int8 下 KV 缓存的总大小是 $2SLKH$。对一个中等规模的模型——8k 上下文、64 层、$KH = NH = D = 8192$——就是 $2 \cdot 8192 \cdot 64 \cdot 8192 = 8\text{GiB}$。这就是为什么我们想用 GMQA，让 $K \ll N$。
 
-## What Should You Take Away from this Section?
+## 这一节你应该带走什么？
 
-* The overall parameters and FLOPs of a Transformer are fairly easy to calculate, and are summarized here, assuming MHA (with batch size B, vocab size V, a sequence of length T, D=d<sub>model</sub>, and F=d<sub>ff</sub>):
+* Transformer 的总参数量和 FLOPs 算起来并不难，汇总如下（按标准 MHA 计；批大小 B，词表大小 V，序列长度 T，D=d<sub>model</sub>，F=d<sub>ff</sub>）：
 
 
 <!-- $$
@@ -303,50 +303,50 @@ Each KV cache is then effectively an array of size $[2, S, L, K, H]$ where the 2
 $$ -->
 
 
-| Component     | Params per layer          | Training FLOPs per layer      |
+| 组件     | 每层参数量          | 每层训练 FLOPs      |
 | :------------ | :------------------------ | :---------------------------- |
 | **MLP**       | 3DF                       | 18BTDF                        |
 | **Attention** | 4DNH                      | 24BTDNH \+ 12BT<sup>2</sup>NH |
-| **Other**     | 2D                        | BTD                           |
-| **Vocab**     | DV (total, not per-layer) | 12BTDV                        |
+| **其他**     | 2D                        | BTD                           |
+| **词表**     | DV（总量，不逐层计） | 12BTDV                        |
 
-* The parameter count of the MLP block dominates the total parameter count and the MLP block also dominates the FLOPs budget as long as the sequence length $T < 8D$.
-* The total FLOPs budget during training is well approximated by $$6 \cdot \text{num_params} \cdot \text{num_tokens}$$ for reasonable context lengths.
-* During inference, our KV caches are roughly $$2 \cdot S \cdot L \cdot K \cdot H$$ per cache (where K is the number of KV heads), although architectural modifications can often reduce this.
+* 只要序列长度 $T < 8D$，MLP 块的参数量就占模型总参数的大头，FLOPs 预算也主要花在 MLP 块上。
+* 在合理的上下文长度下，训练总 FLOPs 可以很好地近似为 $$6 \cdot \text{num_params} \cdot \text{num_tokens}$$（6 × 参数量 × token 数）。
+* 推理时，每个 KV 缓存大约占 $$2 \cdot S \cdot L \cdot K \cdot H$$（K 是 KV 头的数量），不过架构上的改动常能把这个数压下来。
 
-## A Few Problems to Work
+## 动手解题
 
-**Question 1:** How many parameters does a model with $D=4096$, $F=4 \cdot D$, $V=32,000$, and $L=64$ have? What fraction of these are attention parameters? How large are our KV caches per token? *You can assume $N\cdot H=D$ and multi-head attention with int8 KVs.*
+**问题 1：** 一个 $D=4096$、$F=4 \cdot D$、$V=32,000$、$L=64$ 的模型有多少参数？其中注意力参数占多大比例？每个 token 的 KV 缓存有多大？*可以假设 $N\cdot H=D$、用多头注意力、KV 是 int8。*
 
-{% details Click here for the answer. %}
+{% details 点此查看答案。 %}
 
-1. The total parameters is roughly $$L \cdot (3DF + 4DNH + 2D) + 2DV$$ (counting the two layernorms per layer). For the given numbers, this is $$64 \cdot (3 \cdot 4e3 \cdot 16e3 + 4 \cdot 4e3 \cdot 4e3 + 2 \cdot 4e3) + 2 \cdot 4e3 \cdot 32e3 = 16e9$$, or 16B parameters.
-2. The ratio of attention parameters to total parameters in general is $$4DNH / (4DNH + 3DF) = 4D^2 / (4D^2 + 12D^2) = 1/4$$. This means roughly 1/4 of the parameters are used in attention.
-3. Per token, our KV caches are $$2 \cdot L \cdot N \cdot H = 2 \cdot 64 \cdot 4096$$ in int8, which is `512 KiB / token`.
-
-{% enddetails %}
-
-**Question 2:** How many total FLOPs are required to perform A[B<sub>X</sub>, D<sub>Y</sub>] \*<sub>D</sub> W[D<sub>Y</sub>, F] on `{'X': 4, 'Y': 8, 'Z': 4}`? How many FLOPs are performed by each TPU?
-
-{% details Click here for the answer. %}
-
-The total "theoretical" FLOPs of the operation is $$2 \cdot B \cdot D \cdot F$$. However, because the computation isn't sharded across the Z dimension, we're actually doing Z extra FLOPs, meaning $$2 \cdot B \cdot D \cdot F \cdot Z$$ total FLOPs. Since the computation is sharded across the other dimensions, the total per-device is roughly $$2 \cdot B \cdot D \cdot F / (X \cdot  Y)$$.
+1. 总参数量约为 $$L \cdot (3DF + 4DNH + 2D) + 2DV$$（把每层的两个 layernorm 也算上）。代入数据：$$64 \cdot (3 \cdot 4e3 \cdot 16e3 + 4 \cdot 4e3 \cdot 4e3 + 2 \cdot 4e3) + 2 \cdot 4e3 \cdot 32e3 = 16e9$$，即 16B 参数。
+2. 一般情况下，注意力参数与总参数之比是 $$4DNH / (4DNH + 3DF) = 4D^2 / (4D^2 + 12D^2) = 1/4$$。也就是说约 1/4 的参数用在注意力上。
+3. 每个 token 的 KV 缓存是 $$2 \cdot L \cdot N \cdot H = 2 \cdot 64 \cdot 4096$$（int8），即 `512 KiB / token`。
 
 {% enddetails %}
 
-**Question 3:** How many FLOPs are involved in performing $A[I,J,K,L] * B[I,J,M,N,O] \rightarrow C[K,L,M,N,O]$?
+**问题 2：** 在网格 `{'X': 4, 'Y': 8, 'Z': 4}` 上做 A[B<sub>X</sub>, D<sub>Y</sub>] \*<sub>D</sub> W[D<sub>Y</sub>, F]，总共要花多少 FLOPs？每块 TPU 做多少 FLOPs？
 
-{% details Click here for the answer. %}
+{% details 点此查看答案。 %}
 
-Following the rule above, we have I and J as contracting dimensions and K, L, M, N, and O as non-contracting dimensions. We have no "batching dimensions", so this is just $$2 \cdot I \cdot J \cdot K \cdot L \cdot M \cdot N \cdot O$$, the product of all the axes. If we had a shared axis, it would only be counted once.
+这个运算的总“理论”FLOPs 是 $$2 \cdot B \cdot D \cdot F$$。但因为计算没有沿 Z 维分片，我们实际上多做了 Z 倍的 FLOPs，总共是 $$2 \cdot B \cdot D \cdot F \cdot Z$$。又因为计算沿其余维度是分片的，每台设备上的量约为 $$2 \cdot B \cdot D \cdot F / (X \cdot  Y)$$。
 
 {% enddetails %}
 
-**Question 4:** What is the arithmetic intensity of grouped multi-query attention (ignoring the Q/K/V/O projections)? *Give the answer as a function of the Q and KV sequence lengths T and S and the multi-query factor G.* At what context length is attention FLOPs-bound? Given the HBM bandwidth of our TPUs, plot the effective relative cost of attention to the FFW block as the context length grows. *Hint: assume we're using an efficient attention implementation that doesn't do any unnecessary reads/writes. Consider both the limits where T = S and T << S.*
+**问题 3：** 做 $A[I,J,K,L] * B[I,J,M,N,O] \rightarrow C[K,L,M,N,O]$ 涉及多少 FLOPs？
 
-{% details Click here for the answer. %}
+{% details 点此查看答案。 %}
 
-Self-attention requires loading the $$Q$$, $$K$$, and $$V$$ activations, then computing $$\text{softmax}(Q \cdot K) \cdot V$$, then writing the result back to HBM. This will be done with Flash Attention so there are some caveats to this math, but basically in bf16 self-attention performs
+按上面的法则，I 和 J 是收缩维，K、L、M、N、O 是非收缩维。没有“批量维”，所以就是 $$2 \cdot I \cdot J \cdot K \cdot L \cdot M \cdot N \cdot O$$——所有轴的乘积。若有共享轴，它只数一遍。
+
+{% enddetails %}
+
+**问题 4：** 分组多查询注意力的算术强度是多少（忽略 Q/K/V/O 投影）？*请把答案写成 Q、KV 序列长度 T、S 和分组因子 G 的函数。*上下文多长时注意力会变成计算受限？结合我们 TPU 的 HBM 带宽，画出注意力相对 FFW 块的有效成本随上下文长度的变化。*提示：假设用高效的注意力实现，没有多余的读写。分别考虑 T = S 和 T << S 两个极限。*
+
+{% details 点此查看答案。 %}
+
+自注意力需要读入 $$Q$$、$$K$$、$$V$$ 激活，算 $$\text{softmax}(Q \cdot K) \cdot V$$，再把结果写回 HBM。这会由 Flash Attention 完成，所以下面的账有点出入，但基本上 bf16 自注意力做的是：
 
 $$\text{Q[B,T,N,H]} \rightarrow_\text{reshape} \text{Q[B, T, K, G, H]} \cdot \text{K[B, S, K, H]} \rightarrow \text{O[B, T, S, K, G]}$$
 
@@ -354,112 +354,112 @@ $$U=\text{softmax}_S(\text{O[B, T, S, K, G]})$$
 
 $$\text{U[B, T, S, K, G]} \cdot \text{V[B, S, K, H]} \rightarrow \text{X[B, T, K, G, H]}$$
 
-So our total bytes is $$2 * \text{sizeof}(Q) + 2 * \text{sizeof(K or V)} = 4BTNH + 4BSKH = 4BHK * (TG + S)$$, total FLOPs is $$4BTSNH + O(BTSN)$$ and the arithmetic intensity is $$4BTSKGH / (4BHK * (TG + S))$$.
+所以总字节数是 $$2 * \text{sizeof}(Q) + 2 * \text{sizeof(K or V)} = 4BTNH + 4BSKH = 4BHK * (TG + S)$$，总 FLOPs 是 $$4BTSNH + O(BTSN)$$，算术强度是 $$4BTSKGH / (4BHK * (TG + S))$$。
 
-So basically, during prefill we have $$S=T$$ so we have an arithmetic intensity of $$4BT^2KGH / 4BHKT \cdot (G+1) = TG/(G + 1) = O(T)$$. During generation, $$T=1$$ so we have $$4BSKGH / (4BHK \cdot (G + S)) = SG / (G + S) \rightarrow G$$ assuming $$S$$ is very large. Depending on how you interpret the question, during prefill or training self-attention is compute-bound at S=240 assuming no sequence sharding. During generation, we are never compute-bound because $$G$$ is small. Nonetheless, you can see that increasing $$G$$ leads to us being closer to compute-bound.
-
-{% enddetails %}
-
-**Question 5:** At what sequence length are self-attention FLOPs equal to the QKVO projection FLOPs?
-
-{% details Click here for the answer. %}
-
-This is purely a question of when $$24BTDNH = 12BT^2NH$$. Simplifying we get $$2D = T$$, so e.g. for $$D=4096$$, this is $$8192$$. This tells us that for most reasonable context lengths, matmul FLOPs are greater.
+于是，预填充阶段 $$S=T$$，算术强度为 $$4BT^2KGH / 4BHKT \cdot (G+1) = TG/(G + 1) = O(T)$$。生成阶段 $$T=1$$，得到 $$4BSKGH / (4BHK \cdot (G + S)) = SG / (G + S) \rightarrow G$$（设 $$S$$ 很大）。取决于你怎么解读题目：预填充或训练时，若不做序列分片，自注意力在 S=240 就计算受限了。生成阶段我们永远不会计算受限，因为 $$G$$ 很小。不过也能看到，增大 $$G$$ 会让我们更接近计算受限。
 
 {% enddetails %}
 
-**Question 6:** Say we only save the output of each of the 7 main matmuls in a Transformer layer during our forward pass (Q, K, V, O \+ the three FFW matrices). How many extra FLOPs do we need to "rematerialize" during the backward pass?
+**问题 5：** 序列长度多大时，自注意力的 FLOPs 会追平 QKVO 投影的 FLOPs？
 
-{% details Click here for the answer. %}
+{% details 点此查看答案。 %}
 
-Saving only the seven matmul outputs (Q, K, V, O, W₁, W₂, W₃) means the backward pass must recompute the two attention matmuls
+这就是问 $$24BTDNH = 12BT^2NH$$ 何时成立。化简得 $$2D = T$$，例如 $$D=4096$$ 时就是 $$8192$$。这说明在大多数合理的上下文长度下，矩阵乘的 FLOPs 都更大。
+
+{% enddetails %}
+
+**问题 6：** 假设前向传播时，我们只保存 Transformer 层里 7 个主要矩阵乘的输出（Q、K、V、O 加三个 FFW 矩阵）。反向传播时要“重新算出来”多少额外 FLOPs？
+
+{% details 点此查看答案。 %}
+
+只存这七个矩阵乘的输出（Q、K、V、O、W₁、W₂、W₃），意味着反向传播必须重算注意力的两个矩阵乘
 
 $$QK^{\top} \quad\text{and}\quad \operatorname{softmax}(QK^{\top})V$$
 
-in order to obtain $\frac{\partial L}{\partial W_\text{O}}$.
+才能得到 $\frac{\partial L}{\partial W_\text{O}}$。
 
-Each is a $T \times T$ matmul batched over $B$ sequences and $N$ heads, so the additional FLOPs are
+这两个都是 $T \times T$ 的矩阵乘，沿 $B$ 条序列和 $N$ 个头批处理，所以额外 FLOPs 是
 
 $$4 \; B \, T^{2} \, N \, H.$$
 
-Other recomputed operations are:
-1. $O(BTD)$ for $\frac{\partial L}{\partial W_\text{In1}}$ and $\frac{\partial L}{\partial W_\text{In2}}$.
-2. And $O(BTF)$ for $\frac{\partial L}{\partial W_\text{Out}}$.
+其余需要重算的操作还有：
+1. $\frac{\partial L}{\partial W_\text{In1}}$ 和 $\frac{\partial L}{\partial W_\text{In2}}$ 带来的 $O(BTD)$。
+2. 以及 $\frac{\partial L}{\partial W_\text{Out}}$ 带来的 $O(BTF)$。
 
 {% enddetails %}
 
-**Question 7:** DeepSeek v3 says it was trained for 2.79M H800 hours on 14.8T tokens ([source](https://arxiv.org/pdf/2412.19437v1)). Given that it has 37B activated parameters, roughly what hardware utilization did they achieve? *Hint: note that they used FP8 FLOPs without structured sparsity.*
+**问题 7：** DeepSeek v3 说它在 14.8T 个 token 上训练了 279 万个 H800 卡时（[来源](https://arxiv.org/pdf/2412.19437v1)）。已知它激活参数 37B，估算他们达到的硬件利用率。*提示：注意他们用的是 FP8、没有结构化稀疏。*
 
-{% details Click here for the answer. %}
+{% details 点此查看答案。 %}
 
-From the spec sheet [here](https://lenovopress.lenovo.com/lp1814.pdf), we find 3,026 TFLOPs/s of FP8 performance with sparsity, or typically half this (`1.513e15` FLOPs/s) without sparsity. 2.79M H800 hours means `2.79e6 * 1.513e15 * 60 * 60 = 1.52e25` total FLOPs. Given the activated parameter count of 37B, this training run should have used about `6 * 37e9 * 14.8e12 = 3.3e24` FLOPs. That means the FLOPs utilization is about `3.3e24 / 1.52e25 = 21.7%`.
-
-{% enddetails %}
-
-**Question 8:** Mixture of Experts (MoE) models have $E$ copies of a standard dense MLP block, and each token activates $k$ of these experts. What batch size in tokens is required to be compute-bound for an MoE with weights in int8 on TPU v5e? For DeepSeek, which has 256 (routed) experts and $k=8$, what is this number?
-
-{% details Click here for the answer. %}
-
-Because we have $E$ copies of each expert, in int8, for each weight matrix we need to load $E \cdot D \cdot F$ bytes. Because each token activates $k$ experts, for each weight matrix we have $2\cdot k \cdot B \cdot D \cdot F$ FLOPs. To be compute-bound with int8 weights and bfloat16 FLOPs, we need the arithmetic intensity (FLOPs per byte loaded) to exceed the TPU's ~240 FLOPs/byte, which happens when $(2\cdot k \cdot BDF) / EDF > 240$ or $k \cdot B / E > 120$.
-
-Therefore, we need $B > 120 \cdot E / k$ to be compute-bound. For DeepSeek, this gives us $B > 120 \cdot 256 / 8 = 3840$. This is a remarkably large batch size at generation time.
+从[这份规格表](https://lenovopress.lenovo.com/lp1814.pdf)查到，带稀疏的 FP8 性能是 3,026 TFLOPs/s，不带稀疏通常是一半（`1.513e15` FLOPs/s）。279 万 H800 卡时相当于 `2.79e6 * 1.513e15 * 60 * 60 = 1.52e25` 总 FLOPs。按 37B 激活参数，这次训练大约用掉 `6 * 37e9 * 14.8e12 = 3.3e24` FLOPs。于是 FLOPs 利用率约为 `3.3e24 / 1.52e25 = 21.7%`。
 
 {% enddetails %}
 
-<h3 markdown=1 class="next-section">That's it for Part 4! For Part 5 (about scaling Transformer training), [click here](../training)!</h3>
+**问题 8：** 混合专家（MoE）模型有 $E$ 份标准稠密 MLP 块，每个 token 激活其中 $k$ 个专家。在 TPU v5e 上，权重为 int8 的 MoE 要达到计算受限，需要多大的 token 批大小？对 DeepSeek（256 个路由专家、$k=8$），这个数是多少？
 
-## Appendix
+{% details 点此查看答案。 %}
 
-### Appendix A: How does Flash Attention work?
+每个专家有 $E$ 份拷贝，int8 下每个权重矩阵要读入 $E \cdot D \cdot F$ 字节。每个 token 激活 $k$ 个专家，所以每个权重矩阵对应 $2\cdot k \cdot B \cdot D \cdot F$ FLOPs。要让 int8 权重、bfloat16 计算达到计算受限，算术强度（每字节对应的 FLOPs）必须超过 TPU 的约 240 FLOPs/字节，即要求 $(2\cdot k \cdot BDF) / EDF > 240$，也就是 $k \cdot B / E > 120$。
 
-The traditional objection to scaling Transformers to very long context is that the attention FLOPs and memory usage scale quadratically with context length. While it's true that the attention QK product has shape $[B, T, S, N]$ where B is the batch size, T and S are the Q and K sequence dims, and N is the number of heads, this claim comes with some serious caveats:
+因此要 $B > 120 \cdot E / k$ 才会计算受限。对 DeepSeek，就是 $B > 120 \cdot 256 / 8 = 3840$。这在生成阶段是相当大的批大小。
 
-1. As we noted earlier, even though this is quadratic, the attention FLOPs only dominate when $$T > 8 \cdot D$$, and during training the memory of a single attention matrix is small compared to all of the weights and activation checkpoints living in memory, especially when sharded.
-2. We don't need to materialize the full attention matrix in order to compute attention! We can compute local sums and maxes and avoid ever materializing more than a small chunk of the array. While the total FLOPs is still quadratic, we drastically reduce memory pressure.
+{% enddetails %}
 
-This second observation was first made by [Rabe et al. 2021](https://arxiv.org/abs/2112.05682) and later in the [Flash Attention paper](https://arxiv.org/abs/2205.14135) (Dao et al. 2022). The basic idea is to compute the attention in chunks of K/V, where we compute the local softmax and some auxiliary statistics, then pass them on to the next chunk which combines them with its local chunk. Specifically, we compute
+<h3 markdown=1 class="next-section">第 4 部分到此结束！第 5 部分讲扩大 Transformer 的训练，[点击这里](../training)。</h3>
 
-1. **M:** The running max of $$q \cdot k$$ over the sequence dimension
-2. **O:** The running full attention softmax over the sequence dimension
-3. **L:** The running denominator $$\sum_i \exp(q \cdot k_i - \text{running max})$$
+## 附录
 
-With these, we can compute the new max, the new running sum, and the new output with only a constant amount of memory. To give a sketchy description of how this works, attention is roughly this operation:
+### 附录 A：Flash Attention 是怎么工作的？ {#附录-a-flash-attention-是怎么工作的}
+
+对把 Transformer 扩展到超长上下文，传统的反对理由是：注意力的 FLOPs 和内存都随上下文长度二次增长。没错，注意力里 QK 乘积的形状是 $[B, T, S, N]$（B 是批大小，T、S 是 Q 和 K 的序列维，N 是头数），但这个说法有两个重要的保留意见：
+
+1. 如前所述，虽然它是二次的，注意力的 FLOPs 也只有当 $$T > 8 \cdot D$$ 时才占大头；而训练时，单个注意力矩阵的内存与常驻的权重和激活检查点相比是小的，分片之后就更小。
+2. 我们根本不需要把整个注意力矩阵真的存下来！可以分块算局部和与局部最大值，全程只碰数组的一小块。总 FLOPs 仍是二次的，但内存压力大幅降低。
+
+第二个观察最早由 [Rabe et al. 2021](https://arxiv.org/abs/2112.05682)提出，后来在 [Flash Attention 论文](https://arxiv.org/abs/2205.14135)（Dao et al. 2022）中被发扬光大。基本思路是：沿 K/V 分块计算注意力——每块算自己的局部 softmax 和一点辅助统计量，再把它们交给下一块合并。具体维护三样东西：
+
+1. **M：** $$q \cdot k$$ 沿序列维的滚动最大值
+2. **O：** 沿序列维的滚动完整注意力 softmax 值
+3. **L：** 滚动分母 $$\sum_i \exp(q \cdot k_i - \text{running max})$$
+
+有了这些，只需要常量级的内存，就能算出新最大值、新的滚动和、以及新的输出。下面粗略描述其原理。注意力大致是这个运算：
 
 $$\text{Attn}(Q, K, V) = \sum_i \frac{\exp(Q \cdot K_i - \max_j Q \cdot K_j) V_i}{\sum_l \exp(Q \cdot K_l - \max_j Q \cdot K_j)}$$
 
-The max is subtracted for numerical stability and can be subtracted without affecting the outcome since $$\sum_i \exp(a_i + b) = \exp(b) \sum \exp(a)$$. Looking just at the denominator above, if we imagine having two contiguous chunks of key vectors, $$K^1$$ and $$K^2$$ and we compute the local softmax sums $$L^1$$ and $$L^2$$ for each
+减去最大值是为了数值稳定；而且减了不影响结果，因为 $$\sum_i \exp(a_i + b) = \exp(b) \sum \exp(a)$$。只看上面的分母：假设有两段连续的 key 向量 $$K^1$$ 和 $$K^2$$，分别算出局部 softmax 分母 $$L^1$$、$$L^2$$：
 
 $$L^1 = \sum_i \exp(Q \cdot K_i^1 - \max_j Q \cdot K_j^1)$$
 
 $$L^2 = \sum_i \exp(Q \cdot K_i^2 - \max_j Q \cdot K_j^2)$$
 
-Then we can combine these into the full softmax sum for these two chunks together by using
+那么两段合起来的 softmax 分母可以这样合并：
 
 $$L^\text{combined} = \exp(M^1 - \max(M^1, M^2)) \cdot L^1 + \exp(M^2 - \max(M^1, M^2)) \cdot L^2$$
 
-where
+其中
 
 $$M^1 = \max_j Q \cdot K_j^1 \text{ and } M^2 = \max_j Q \cdot K_j^2$$
 
-This can be done for the full softmax as well, giving us a way of accumulating arbitrarily large softmax sums. Here's the full algorithm from the Flash Attention paper.
+完整的 softmax 也能这样合并，于是任意大的 softmax 分母都能一点点累加出来。这是 Flash Attention 论文里的完整算法。
 
 {% include figure.liquid path="assets/img/flash-algo.png" class="img-fluid" %}
 
-From a hardware standpoint, this lets us fit our chunk of Q into VMEM (what the algorithm above calls on-chip SRAM) so we only have to load the KV chunks on each iteration, increasing the arithmetic intensity. We can also keep the running statistics in VMEM.
+从硬件角度看，这让我们能把 Q 的一块放进 VMEM（也就是算法论文里说的片上 SRAM），每次迭代只需要加载 KV 的块，算术强度因此变高。滚动统计量也可以一直放在 VMEM 里。
 
-One last subtle point worth emphasizing is an attention softmax property that's used to make the Flash VJP (reverse mode derivative) calculation practical for training. We define an intermediate softmax array:
+最后还有一个值得强调的微妙技巧——注意力 softmax 的一个性质，它让 Flash VJP（反向模式导数）计算在训练中真正可用。定义中间 softmax 数组：
 
 $$S_{ij} = \frac{e^{\tau q_i \cdot k_j}}{\sum_l e^{\tau q_i \cdot k_l}}$$
 
-In attention, we obtain *dS* from reverse-mode *dO* and *V* arrays:
+注意力里，我们从反向的 *dO* 和 *V* 数组得到 *dS*：
 
 $$dS_{ij} = dO_{id} \cdot_d V_{jd} = \sum_d dO_{id} V_{jd}$$
 
-During the backpropagation of this gradient to Q and K
+把这个梯度往 Q 和 K 反向传播时：
 
 $$d(q_i \cdot k_j) = (dS_{ij} - S_{ij} \cdot_j dS_{ij}) S_{ij}$$
 
-We exploit an identity that allows us to exchange a contraction along the large key **length** dimension with a local contraction along the feature **depth** dimension.
+我们利用一个恒等式，把对很长的 key **长度**维的收缩，换成了对特征**深度**维的局部收缩：
 
 $$\begin{align*}
 S_{ij} \cdot_j dS_{ij} &= \sum_j \frac{e^{\tau q_i \cdot k_j}}{\sum_k e^{\tau q_i \cdot k_k}} \sum_d dO_{id} V_{jd} \\
@@ -468,4 +468,4 @@ S_{ij} \cdot_j dS_{ij} &= \sum_j \frac{e^{\tau q_i \cdot k_j}}{\sum_k e^{\tau q_
 &= dO_{id} \cdot_d O_{id}
 \end{align*}$$
 
-This replacement is crucial for being able to implement a sequence-block *local* calculation for the VJP, and enables further clever sharding schemes like ring attention.
+这个替换，正是 VJP 能够按序列块做*局部*计算的关键，也让 ring attention 一类更巧妙的分片方案成为可能。
